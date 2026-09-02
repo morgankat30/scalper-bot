@@ -74,6 +74,9 @@
   .status-line .halted{ color:var(--danger); font-weight:700; }
   .log-box{ margin-top:10px; background:#000; border-radius:10px; padding:8px 10px; height:70px;
     overflow-y:auto; font-size:10px; color:#7d8590; font-family:monospace; }
+  .pair-row{ padding:10px 14px; font-size:13px; color:var(--text-dark); cursor:pointer; border-bottom:1px solid #e2e5ea; }
+  .pair-row:last-child{ border-bottom:none; }
+  .pair-row:active{ background:#e2e5ea; }
 </style>
 </head>
 <body>
@@ -105,15 +108,6 @@
       <div class="field">
         <label>Access Token</label>
         <input type="password" id="ctTok" placeholder="paste access token">
-      </div>
-      <div class="field">
-        <label>Symbol</label>
-        <select id="symbolSelect">
-          <option value="EURUSD">EUR/USD</option>
-          <option value="GBPUSD">GBP/USD</option>
-          <option value="USDJPY">USD/JPY</option>
-          <option value="XAUUSD">XAU/USD (Gold)</option>
-        </select>
       </div>
       <div class="field">
         <label>Broker</label>
@@ -152,6 +146,12 @@
       <div class="check">✓</div>
     </div>
 
+    <div class="field" style="margin-top:10px;">
+      <label>Trading pair — tap to search all available symbols</label>
+      <input type="text" id="pairSearch" placeholder="Currently: EURUSD — tap to search/change" autocomplete="off">
+    </div>
+    <div id="pairResults" style="max-height:160px; overflow-y:auto; display:none; background:var(--card); border-radius:12px; margin-top:-4px; margin-bottom:10px;"></div>
+
     <div class="metrics">
       <div class="metric"><div class="label">Account</div><div class="value" id="metAccount">—</div></div>
       <div class="metric"><div class="label">Environment</div><div class="value" id="metEnv">—</div></div>
@@ -183,9 +183,10 @@ const PT = {
   APP_AUTH_REQ:2100, APP_AUTH_RES:2101, ACC_AUTH_REQ:2102, ACC_AUTH_RES:2103,
   NEW_ORDER_REQ:2106, SYMBOLS_LIST_REQ:2114, SYMBOLS_LIST_RES:2115,
   TRADER_REQ:2121, TRADER_RES:2122, RECONCILE_REQ:2124, RECONCILE_RES:2125,
-  EXECUTION_EVENT:2126, SUBSCRIBE_SPOTS_REQ:2127, SPOT_EVENT:2131,
-  ORDER_ERROR_EVENT:2132, ERROR_RES:2142,
-  GET_ACCOUNTS_REQ:2149, GET_ACCOUNTS_RES:2150, HEARTBEAT:51
+  EXECUTION_EVENT:2126, SUBSCRIBE_SPOTS_REQ:2127, UNSUBSCRIBE_SPOTS_REQ:2129,
+  SPOT_EVENT:2131, ORDER_ERROR_EVENT:2132, ERROR_RES:2142,
+  GET_ACCOUNTS_REQ:2149, GET_ACCOUNTS_RES:2150,
+  GET_TRENDBARS_REQ:2137, GET_TRENDBARS_RES:2138, HEARTBEAT:51
 };
 
 const state = {
@@ -193,10 +194,12 @@ const state = {
   clientId:null, clientSecret:null, accessToken:null, env:'demo',
   accountId:null, accountReady:false,
   balance:null, positions:[],
-  symbol:'EURUSD', symbolId:null, symbolsById:{},
-  bars:[], currentBar:null,
-  running:true, lastSignalAt:null, lastError:null,
+  symbol:'EURUSD', symbolId:null,
+  symbolsById:{}, symbolList:[],       // full list from the broker, for search
+  bars:[], currentBar:null, historyLoaded:false,
+  running:false, lastSignalAt:null, lastError:null,   // stays OFF until you tap Start
   dayStartBalance:null, dayKey:null,
+  pendingTrendbarMsgId:null,
 };
 
 const RISK_PERCENT = 1;       // % of balance risked per trade
@@ -227,7 +230,7 @@ function connect(){
   state.clientSecret = $('ctSec').value.trim();
   state.accessToken = $('ctTok').value.trim();
   state.env = $('ctEnv').value;
-  state.symbol = $('symbolSelect').value;
+  state.symbol = 'EURUSD'; // default pair on connect — change it from the dashboard's pair search after
   $('errorLine').textContent = '';
 
   if(!state.clientId || !state.clientSecret || !state.accessToken){
@@ -310,15 +313,38 @@ function handleMessage(m){
 
     case PT.SYMBOLS_LIST_RES: {
       const list = p.symbol || [];
+      state.symbolList = list;
       list.forEach(s => { state.symbolsById[s.symbolId] = s; });
       const match = list.find(s => (s.symbolName || '').replace('/', '').toUpperCase() === state.symbol);
       if(match){
-        state.symbolId = match.symbolId;
-        send(PT.SUBSCRIBE_SPOTS_REQ, { ctidTraderAccountId: state.accountId, symbolId: [state.symbolId] });
-        log('Subscribed to ' + state.symbol + '.');
+        switchSymbol(match.symbolId, match.symbolName);
+      } else if(list.length){
+        // Fall back to whatever the broker returns first, rather than
+        // silently subscribing to nothing.
+        switchSymbol(list[0].symbolId, list[0].symbolName);
       } else {
-        log('Could not find symbol "' + state.symbol + '" in this account\'s symbol list.');
+        log('This account returned no tradable symbols at all.');
       }
+      break;
+    }
+
+    case PT.GET_TRENDBARS_RES: {
+      if(m.clientMsgId !== state.pendingTrendbarMsgId) break; // stale response from a symbol we've since left
+      const raw = p.trendbar || [];
+      if(!raw.length){ log('No history returned for this symbol yet.'); break; }
+      state.bars = raw.map(tb => {
+        const low = (tb.low || 0) / 1e5;
+        return {
+          t: tb.utcTimestampInMinutes * 60000,
+          o: low + (tb.deltaOpen || 0) / 1e5,
+          h: low + (tb.deltaHigh || 0) / 1e5,
+          l: low,
+          c: low + (tb.deltaClose != null ? tb.deltaClose : (tb.deltaOpen || 0)) / 1e5,
+        };
+      }).sort((a,b) => a.t - b.t).slice(-200);
+      state.historyLoaded = true;
+      log('Loaded ' + state.bars.length + ' minutes of history for ' + state.symbol + '.');
+      updateDashboard();
       break;
     }
 
@@ -349,6 +375,61 @@ function handleMessage(m){
       break;
   }
 }
+
+// ---- symbol switching (search, subscribe, preload history) ------------
+function switchSymbol(symbolId, symbolName){
+  if(state.symbolId != null){
+    send(PT.UNSUBSCRIBE_SPOTS_REQ, { ctidTraderAccountId: state.accountId, symbolId: [state.symbolId] });
+  }
+  state.symbolId = symbolId;
+  state.symbol = (symbolName || '').replace('/', '').toUpperCase();
+  state.bars = [];
+  state.currentBar = null;
+  state.historyLoaded = false;
+
+  send(PT.SUBSCRIBE_SPOTS_REQ, { ctidTraderAccountId: state.accountId, symbolId: [symbolId] });
+  log('Subscribed to ' + state.symbol + '.');
+
+  const msgId = 'hist' + (state.msgSeq++);
+  state.pendingTrendbarMsgId = msgId;
+  send(PT.GET_TRENDBARS_REQ, {
+    ctidTraderAccountId: state.accountId,
+    symbolId: symbolId,
+    period: 'M1',
+    fromTimestamp: Date.now() - 200*60000,
+    toTimestamp: Date.now(),
+  });
+
+  $('pairSearch').value = '';
+  $('pairSearch').placeholder = 'Currently: ' + state.symbol + ' — tap to search/change';
+  $('pairResults').style.display = 'none';
+  updateDashboard();
+}
+
+function renderPairResults(filterText){
+  const box = $('pairResults');
+  const q = filterText.trim().toUpperCase();
+  const matches = state.symbolList
+    .filter(s => !q || (s.symbolName || '').toUpperCase().includes(q))
+    .slice(0, 40);
+
+  if(!matches.length){
+    box.innerHTML = '<div class="pair-row" style="color:var(--text-mid);">No matches</div>';
+  } else {
+    box.innerHTML = matches.map(s =>
+      '<div class="pair-row" data-id="' + s.symbolId + '" data-name="' + s.symbolName + '">' + s.symbolName + '</div>'
+    ).join('');
+    box.querySelectorAll('.pair-row[data-id]').forEach(el => {
+      el.addEventListener('click', () => {
+        switchSymbol(parseInt(el.dataset.id, 10), el.dataset.name);
+      });
+    });
+  }
+  box.style.display = 'block';
+}
+
+$('pairSearch').addEventListener('focus', () => renderPairResults(''));
+$('pairSearch').addEventListener('input', (e) => renderPairResults(e.target.value));
 
 // ---- price stream -> candles -> strategy ------------------------------
 function onSpot(p){
