@@ -121,6 +121,7 @@
 
     <div class="hint">Connects straight from this page to cTrader's own servers — the same free Open API Pepperstone runs on. Nothing routes through a third-party bridge.</div>
     <a class="setup-link" href="https://openapi.ctrader.com" target="_blank">Need a Client ID/Secret? Register a free app at openapi.ctrader.com →</a>
+    <a class="setup-link" href="#" id="forgetLoginLink" style="display:none;">Forget saved login on this device</a>
     <div class="error-line" id="errorLine"></div>
   </div>
 
@@ -151,6 +152,35 @@
       <input type="text" id="pairSearch" placeholder="Currently: EURUSD — tap to search/change" autocomplete="off">
     </div>
     <div id="pairResults" style="max-height:160px; overflow-y:auto; display:none; background:var(--card); border-radius:12px; margin-top:-4px; margin-bottom:10px;"></div>
+
+    <button class="add-btn" id="settingsToggle" style="width:100%; background:var(--card); color:var(--text-dark); border:none; border-radius:12px; padding:10px; font-size:12px; font-weight:600; cursor:pointer; margin-bottom:10px;">⚙ Lot size / SL / TP / speed settings</button>
+    <div id="settingsPanel" style="display:none; background:var(--card); border-radius:12px; padding:12px; margin-bottom:10px;">
+      <div class="field">
+        <label>Fixed lot size (leave blank to auto-size by risk %)</label>
+        <input type="number" id="cfgLotSize" step="0.01" placeholder="e.g. 0.01">
+      </div>
+      <div class="field">
+        <label>Risk % per trade (only used if lot size is blank)</label>
+        <input type="number" id="cfgRisk" step="0.1" value="1">
+      </div>
+      <div class="field">
+        <label>Stop loss (pips)</label>
+        <input type="number" id="cfgSL" step="0.5" value="5">
+      </div>
+      <div class="field">
+        <label>Take profit (pips)</label>
+        <input type="number" id="cfgTP" step="0.5" value="8">
+      </div>
+      <div class="field">
+        <label>Candle speed (seconds per bar — lower = faster/more signals)</label>
+        <input type="number" id="cfgTf" step="1" value="15">
+      </div>
+      <div class="field">
+        <label>Minimum seconds between trades</label>
+        <input type="number" id="cfgCooldown" step="1" value="5">
+      </div>
+      <button class="connect-btn" id="saveSettingsBtn" style="margin-top:4px;">Save settings</button>
+    </div>
 
     <div class="metrics">
       <div class="metric"><div class="label">Account</div><div class="value" id="metAccount">—</div></div>
@@ -202,11 +232,22 @@ const state = {
   pendingTrendbarMsgId:null,
 };
 
-const RISK_PERCENT = 1;       // % of balance risked per trade
-const STOP_LOSS_PIPS = 5;
-const TAKE_PROFIT_PIPS = 8;
+// User-adjustable trade settings (lot size / SL / TP / speed) — editable
+// from the dashboard's settings panel, saved to this device so you don't
+// have to re-enter them every time.
+const settings = {
+  fixedLotSize: null,   // if set, overrides risk-based sizing entirely
+  riskPercent: 1,
+  stopLossPips: 5,
+  takeProfitPips: 8,
+  timeframeSeconds: 15, // smaller = faster candles = more frequent signal checks
+  cooldownSeconds: 5,   // minimum gap between trades
+};
+
 const PIP = { EURUSD:0.0001, GBPUSD:0.0001, USDJPY:0.01, XAUUSD:0.01 };
 const MAX_DAILY_LOSS_PERCENT = 5;
+const LOGIN_STORAGE_KEY = 'scalperbot_login_v1';
+const SETTINGS_STORAGE_KEY = 'scalperbot_settings_v1';
 
 const $ = (id) => document.getElementById(id);
 function log(msg){
@@ -217,6 +258,72 @@ function log(msg){
   box.scrollTop = box.scrollHeight;
   console.log(msg);
 }
+
+// ---- saved login + settings (this device/browser only) ------------------
+// Credentials are stored in plain text in this browser's local storage so
+// you don't have to retype them each time. That's fine on your own phone,
+// but if this device is ever shared or lost, use "Forget saved login" and
+// revoke/regenerate the token at openapi.ctrader.com.
+function loadSavedLogin(){
+  try {
+    const raw = localStorage.getItem(LOGIN_STORAGE_KEY);
+    if(!raw) return;
+    const d = JSON.parse(raw);
+    $('ctEnv').value = d.env || 'demo';
+    $('ctId').value = d.clientId || '';
+    $('ctSec').value = d.clientSecret || '';
+    $('ctTok').value = d.accessToken || '';
+    $('forgetLoginLink').style.display = 'block';
+  } catch(e) {}
+}
+function saveLogin(){
+  localStorage.setItem(LOGIN_STORAGE_KEY, JSON.stringify({
+    env: state.env, clientId: state.clientId, clientSecret: state.clientSecret, accessToken: state.accessToken
+  }));
+  $('forgetLoginLink').style.display = 'block';
+}
+$('forgetLoginLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  localStorage.removeItem(LOGIN_STORAGE_KEY);
+  $('ctId').value = ''; $('ctSec').value = ''; $('ctTok').value = '';
+  $('forgetLoginLink').style.display = 'none';
+});
+
+function loadSavedSettings(){
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if(!raw) return;
+    Object.assign(settings, JSON.parse(raw));
+  } catch(e) {}
+  $('cfgLotSize').value = settings.fixedLotSize ?? '';
+  $('cfgRisk').value = settings.riskPercent;
+  $('cfgSL').value = settings.stopLossPips;
+  $('cfgTP').value = settings.takeProfitPips;
+  $('cfgTf').value = settings.timeframeSeconds;
+  $('cfgCooldown').value = settings.cooldownSeconds;
+}
+function saveSettingsFromForm(){
+  const lot = parseFloat($('cfgLotSize').value);
+  settings.fixedLotSize = isNaN(lot) || lot <= 0 ? null : lot;
+  settings.riskPercent = parseFloat($('cfgRisk').value) || 1;
+  settings.stopLossPips = parseFloat($('cfgSL').value) || 5;
+  settings.takeProfitPips = parseFloat($('cfgTP').value) || 8;
+  settings.timeframeSeconds = Math.max(1, parseInt($('cfgTf').value, 10) || 15);
+  settings.cooldownSeconds = Math.max(1, parseInt($('cfgCooldown').value, 10) || 5);
+  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  log('Settings saved: ' + (settings.fixedLotSize ? settings.fixedLotSize + ' lots fixed' : settings.riskPercent + '% risk')
+    + ', SL ' + settings.stopLossPips + 'p, TP ' + settings.takeProfitPips + 'p, '
+    + settings.timeframeSeconds + 's candles, ' + settings.cooldownSeconds + 's cooldown.');
+  $('settingsPanel').style.display = 'none';
+}
+$('settingsToggle').addEventListener('click', () => {
+  const panel = $('settingsPanel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+});
+$('saveSettingsBtn').addEventListener('click', saveSettingsFromForm);
+
+loadSavedLogin();
+loadSavedSettings();
 
 // ---- connection -----------------------------------------------------
 function send(payloadType, payload){
@@ -298,6 +405,7 @@ function handleMessage(m){
     case PT.ACC_AUTH_RES:
       state.accountReady = true;
       log('Account authorized.');
+      saveLogin();
       send(PT.TRADER_REQ, { ctidTraderAccountId: state.accountId });
       send(PT.SYMBOLS_LIST_REQ, { ctidTraderAccountId: state.accountId });
       send(PT.RECONCILE_REQ, { ctidTraderAccountId: state.accountId, returnProtectionOrders: true });
@@ -443,12 +551,21 @@ function onSpot(p){
 
   pushToBars(mid);
 
-  const signal = generateSignal(state.bars);
+  // Evaluate against the closed bars PLUS the still-forming candle, so the
+  // bot reacts to the live price immediately instead of waiting for the
+  // current candle to finish — that wait was the "taking too long" delay.
+  const evalBars = state.currentBar ? state.bars.concat([{
+    t: state.currentBar.t, o: state.currentBar.o, h: state.currentBar.h,
+    l: state.currentBar.l, c: state.currentBar.c
+  }]) : state.bars;
+
+  const signal = generateSignal(evalBars);
   if(signal) maybeTrade(signal);
 }
 
 function pushToBars(price){
-  const now = Math.floor(Date.now() / 60000) * 60000;
+  const tfMs = settings.timeframeSeconds * 1000;
+  const now = Math.floor(Date.now() / tfMs) * tfMs;
   if(!state.currentBar || state.currentBar.t !== now){
     if(state.currentBar) {
       state.bars.push(state.currentBar);
@@ -545,7 +662,7 @@ function maybeTrade(signal){
     updateDashboard();
     return;
   }
-  if(state.lastSignalAt && Date.now() - state.lastSignalAt < 60000) return;
+  if(state.lastSignalAt && Date.now() - state.lastSignalAt < settings.cooldownSeconds * 1000) return;
 
   placeOrder(signal);
   state.lastSignalAt = Date.now();
@@ -553,19 +670,24 @@ function maybeTrade(signal){
 
 function placeOrder(signal){
   const pip = PIP[state.symbol] || 0.0001;
-  const riskAmount = state.balance * (RISK_PERCENT / 100);
 
-  // Volume scaling: cTrader's NEW_ORDER_REQ volume field is generally
-  // expressed in hundredths of a unit of the base currency (so 1.00 standard
-  // lot = 100000 units = volume 10000000). VERIFY this against a real demo
-  // fill before trusting it on a live account — brokers occasionally differ.
-  const pipValuePerLot = 10; // approx for major FX pairs at 1.0 lot — verify per symbol
-  const rawLots = riskAmount / (STOP_LOSS_PIPS * pipValuePerLot);
-  const lots = Math.max(0.01, Math.min(Math.floor(rawLots*100)/100, 5));
+  let lots;
+  if(settings.fixedLotSize){
+    lots = settings.fixedLotSize;
+  } else {
+    const riskAmount = state.balance * (settings.riskPercent / 100);
+    // Volume scaling: cTrader's NEW_ORDER_REQ volume field is generally
+    // expressed in hundredths of a unit of the base currency (so 1.00 standard
+    // lot = 100000 units = volume 10000000). VERIFY this against a real demo
+    // fill before trusting it on a live account — brokers occasionally differ.
+    const pipValuePerLot = 10; // approx for major FX pairs at 1.0 lot — verify per symbol
+    const rawLots = riskAmount / (settings.stopLossPips * pipValuePerLot);
+    lots = Math.max(0.01, Math.min(Math.floor(rawLots*100)/100, 5));
+  }
   const volume = Math.round(lots * 100000 * 100);
 
-  const relSL = Math.round(STOP_LOSS_PIPS * pip * 100000);
-  const relTP = Math.round(TAKE_PROFIT_PIPS * pip * 100000);
+  const relSL = Math.round(settings.stopLossPips * pip * 100000);
+  const relTP = Math.round(settings.takeProfitPips * pip * 100000);
 
   send(PT.NEW_ORDER_REQ, {
     ctidTraderAccountId: state.accountId,
