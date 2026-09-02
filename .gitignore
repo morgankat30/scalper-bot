@@ -1,0 +1,3 @@
+# Nothing sensitive lives in this repo — credentials are entered live in
+# the browser UI and never saved to a file.
+.DS_Store

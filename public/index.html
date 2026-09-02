@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Scalper Console — Pepperstone / cTrader</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#f5f6f8; --accent:#1a2540;
+    --text-dark:#1c1f26; --text-mid:#5b6472;
+    --ok:#16a34a; --danger:#dc2626;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; font-family:var(--font); background:var(--bg); min-height:100vh;
+    display:flex; align-items:center; justify-content:center; padding:24px 12px; }
+  .phone{ width:100%; max-width:380px; background:var(--bg); border-radius:28px; overflow:hidden;
+    box-shadow:0 0 0 8px #1c2128, 0 20px 60px rgba(0,0,0,.5); min-height:640px; }
+  .screen{ display:none; padding:18px 16px 26px; }
+  .screen.active{ display:block; }
+
+  .status-pill{ background:#e9ebef; color:var(--text-dark); font-size:13px; padding:10px 14px;
+    border-radius:10px; display:flex; align-items:center; gap:8px; margin-bottom:16px; }
+  .status-pill .dot{ width:8px;height:8px;border-radius:50%; background:var(--text-mid); }
+  .status-pill.ok .dot{ background:var(--ok); }
+  .status-pill.err .dot{ background:var(--danger); }
+
+  .login-card{ background:var(--accent); border-radius:16px; padding:20px 16px 24px; }
+  .field{ background:var(--card); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  .field label{ display:block; font-size:11px; color:var(--text-mid); margin-bottom:2px; }
+  .field input, .field select{ width:100%; border:none; background:transparent; font-size:15px;
+    color:var(--text-dark); font-weight:600; outline:none; padding:0; appearance:none; }
+  .platform-row{ display:flex; align-items:center; gap:10px; }
+  .platform-row .glyph{ width:26px;height:26px;border-radius:6px; background:#f97316;
+    display:flex;align-items:center;justify-content:center; font-size:11px; color:#fff; font-weight:700; flex-shrink:0; }
+  .connect-btn{ width:100%; margin-top:14px; background:#0d1117; color:#fff; border:none;
+    border-radius:12px; padding:14px; font-size:15px; font-weight:600; cursor:pointer; }
+  .connect-btn:disabled{ opacity:.6; }
+  .hint{ color:#8a93a6; font-size:12px; text-align:center; margin-top:14px; line-height:1.5; }
+  .error-line{ margin-top:8px; color:var(--danger); font-size:11px; text-align:center; }
+  .setup-link{ color:#6fa8ff; font-size:11px; text-align:center; display:block; margin-top:10px; }
+
+  .dash-header{ text-align:center; padding:6px 0 18px; }
+  .dash-header .eyebrow{ color:#8a93a6; font-size:12px; margin-bottom:14px; }
+  .bot-badge{ width:88px;height:88px;border-radius:50%; background:linear-gradient(155deg,#1e2a44,#0d1117);
+    border:2px solid #2b3650; display:flex;align-items:center;justify-content:center; margin:0 auto 12px; font-size:34px; }
+  .bot-name{ color:#fff; font-size:17px; font-weight:700; margin-bottom:2px; }
+  .bot-sub{ color:#6b7280; font-size:12px; }
+  .trading-with{ color:#8a93a6; font-size:12px; margin:16px 0 4px; }
+  .trading-with strong{ color:#fff; display:block; font-size:15px; margin-top:2px; }
+
+  .control-row{ display:flex; justify-content:space-around; background:var(--card);
+    border-radius:16px; padding:14px 8px; margin:18px 0 12px; }
+  .ctrl{ display:flex;flex-direction:column;align-items:center;gap:6px; color:var(--text-dark);
+    font-size:11px; font-weight:600; background:none;border:none; cursor:pointer; }
+  .ctrl .circle{ width:42px;height:42px;border-radius:50%; background:#0d1117;
+    display:flex;align-items:center;justify-content:center; color:#fff; font-size:16px; }
+  .ctrl.danger .circle{ background:var(--danger); }
+
+  .active-card{ background:var(--accent); border-radius:14px; padding:12px 14px;
+    display:flex; align-items:center; gap:12px; }
+  .active-card .glyph{ width:30px;height:30px;border-radius:7px; background:#f97316;
+    display:flex;align-items:center;justify-content:center; font-size:12px;color:#fff;flex-shrink:0; font-weight:700;}
+  .active-card .name{ color:#fff; font-weight:600; font-size:14px; flex:1; }
+  .active-card .check{ color:var(--ok); font-size:16px; }
+
+  .metrics{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
+  .metric{ background:var(--card); border-radius:12px; padding:12px 14px; }
+  .metric .label{ color:var(--text-mid); font-size:11px; }
+  .metric .value{ color:var(--text-dark); font-size:16px; font-weight:700; margin-top:2px; }
+
+  .status-line{ margin-top:14px; color:#6b7280; font-size:11px; text-align:center; line-height:1.6; }
+  .status-line .live{ color:var(--ok); font-weight:700; }
+  .status-line .halted{ color:var(--danger); font-weight:700; }
+  .log-box{ margin-top:10px; background:#000; border-radius:10px; padding:8px 10px; height:70px;
+    overflow-y:auto; font-size:10px; color:#7d8590; font-family:monospace; }
+</style>
+</head>
+<body>
+
+<div class="phone">
+
+  <!-- LOGIN SCREEN -->
+  <div class="screen active" id="loginScreen">
+    <div class="status-pill" id="statusPill">
+      <span class="dot"></span><span id="statusText">Not connected</span>
+    </div>
+
+    <div class="login-card">
+      <div class="field">
+        <label>Environment</label>
+        <select id="ctEnv">
+          <option value="demo">Demo</option>
+          <option value="live">Live</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Client ID</label>
+        <input type="text" id="ctId" placeholder="from openapi.ctrader.com">
+      </div>
+      <div class="field">
+        <label>Client Secret</label>
+        <input type="password" id="ctSec" placeholder="from openapi.ctrader.com">
+      </div>
+      <div class="field">
+        <label>Access Token</label>
+        <input type="password" id="ctTok" placeholder="paste access token">
+      </div>
+      <div class="field">
+        <label>Symbol</label>
+        <select id="symbolSelect">
+          <option value="EURUSD">EUR/USD</option>
+          <option value="GBPUSD">GBP/USD</option>
+          <option value="USDJPY">USD/JPY</option>
+          <option value="XAUUSD">XAU/USD (Gold)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Broker</label>
+        <div class="platform-row">
+          <div class="glyph">PS</div>
+          <span style="color:var(--text-dark);font-weight:600;font-size:15px;">Pepperstone (cTrader)</span>
+        </div>
+      </div>
+      <button class="connect-btn" id="connectBtn">Connect account</button>
+    </div>
+
+    <div class="hint">Connects straight from this page to cTrader's own servers — the same free Open API Pepperstone runs on. Nothing routes through a third-party bridge.</div>
+    <a class="setup-link" href="https://openapi.ctrader.com" target="_blank">Need a Client ID/Secret? Register a free app at openapi.ctrader.com →</a>
+    <div class="error-line" id="errorLine"></div>
+  </div>
+
+  <!-- DASHBOARD SCREEN -->
+  <div class="screen" id="dashScreen">
+    <div class="dash-header">
+      <div class="eyebrow">THIS IS AN INTRADAY TRADING ROBOT</div>
+      <div class="bot-badge">🦅</div>
+      <div class="bot-name" id="botTitle">EDGE SCALPER</div>
+      <div class="bot-sub">Pepperstone · cTrader · EMA/RSI/BB</div>
+      <div class="trading-with">You are trading with<strong id="botTradingWith">EDGE SCALPER</strong></div>
+    </div>
+
+    <div class="control-row">
+      <button class="ctrl danger" id="removeBtn"><span class="circle">🗑</span>Remove</button>
+      <button class="ctrl" id="stopBtn"><span class="circle" id="stopIcon">⏸</span><span id="stopLabel">Stop</span></button>
+      <button class="ctrl" id="quotesBtn"><span class="circle">📊</span>Quotes</button>
+    </div>
+
+    <div class="active-card">
+      <div class="glyph">PS</div>
+      <div class="name" id="activeCardName">EDGE SCALPER — Pepperstone</div>
+      <div class="check">✓</div>
+    </div>
+
+    <div class="metrics">
+      <div class="metric"><div class="label">Account</div><div class="value" id="metAccount">—</div></div>
+      <div class="metric"><div class="label">Environment</div><div class="value" id="metEnv">—</div></div>
+      <div class="metric"><div class="label">Balance</div><div class="value" id="metBalance">—</div></div>
+      <div class="metric"><div class="label">Open trades</div><div class="value" id="metTrades">0</div></div>
+    </div>
+
+    <div class="status-line" id="engineStatus">Signal engine: <span class="live">connecting…</span></div>
+    <div class="log-box" id="logBox"></div>
+  </div>
+
+</div>
+
+<script>
+/* =========================================================================
+   PEPPERSTONE / cTRADER SCALPING BOT
+   Connects directly to cTrader's Open API over WebSocket (JSON protocol,
+   port 5036) — the same free API Pepperstone accounts run on. No paid
+   bridge, no third-party server; every message goes straight to cTrader.
+
+   BEFORE LIVE MONEY: run this on the Demo environment first. Two things
+   in particular need verifying against real cTrader responses before you
+   trust them: the account balance field, and the volume/lot scaling in
+   placeOrder() below — cTrader's volume convention can vary slightly by
+   account type, and getting it wrong risks sizing a real trade wrong.
+   ========================================================================= */
+
+const PT = {
+  APP_AUTH_REQ:2100, APP_AUTH_RES:2101, ACC_AUTH_REQ:2102, ACC_AUTH_RES:2103,
+  NEW_ORDER_REQ:2106, SYMBOLS_LIST_REQ:2114, SYMBOLS_LIST_RES:2115,
+  TRADER_REQ:2121, TRADER_RES:2122, RECONCILE_REQ:2124, RECONCILE_RES:2125,
+  EXECUTION_EVENT:2126, SUBSCRIBE_SPOTS_REQ:2127, SPOT_EVENT:2131,
+  ORDER_ERROR_EVENT:2132, ERROR_RES:2142,
+  GET_ACCOUNTS_REQ:2149, GET_ACCOUNTS_RES:2150, HEARTBEAT:51
+};
+
+const state = {
+  ws:null, msgSeq:0, hbTimer:null,
+  clientId:null, clientSecret:null, accessToken:null, env:'demo',
+  accountId:null, accountReady:false,
+  balance:null, positions:[],
+  symbol:'EURUSD', symbolId:null, symbolsById:{},
+  bars:[], currentBar:null,
+  running:true, lastSignalAt:null, lastError:null,
+  dayStartBalance:null, dayKey:null,
+};
+
+const RISK_PERCENT = 1;       // % of balance risked per trade
+const STOP_LOSS_PIPS = 5;
+const TAKE_PROFIT_PIPS = 8;
+const PIP = { EURUSD:0.0001, GBPUSD:0.0001, USDJPY:0.01, XAUUSD:0.01 };
+const MAX_DAILY_LOSS_PERCENT = 5;
+
+const $ = (id) => document.getElementById(id);
+function log(msg){
+  const box = $('logBox');
+  const line = document.createElement('div');
+  line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+  console.log(msg);
+}
+
+// ---- connection -----------------------------------------------------
+function send(payloadType, payload){
+  if(!state.ws || state.ws.readyState !== 1) return;
+  const id = 'm' + (state.msgSeq++);
+  state.ws.send(JSON.stringify({ clientMsgId:id, payloadType, payload }));
+}
+
+function connect(){
+  state.clientId = $('ctId').value.trim();
+  state.clientSecret = $('ctSec').value.trim();
+  state.accessToken = $('ctTok').value.trim();
+  state.env = $('ctEnv').value;
+  state.symbol = $('symbolSelect').value;
+  $('errorLine').textContent = '';
+
+  if(!state.clientId || !state.clientSecret || !state.accessToken){
+    $('errorLine').textContent = 'Client ID, Client Secret, and Access Token are all required.';
+    return;
+  }
+
+  const btn = $('connectBtn');
+  btn.disabled = true; btn.textContent = 'Connecting…';
+
+  const host = state.env === 'live'
+    ? 'wss://live.ctraderapi.com:5036'
+    : 'wss://demo.ctraderapi.com:5036';
+
+  const ws = new WebSocket(host);
+  state.ws = ws;
+
+  ws.onopen = () => {
+    log('Socket open. Authorizing application…');
+    send(PT.APP_AUTH_REQ, { clientId: state.clientId, clientSecret: state.clientSecret });
+    state.hbTimer = setInterval(() => send(PT.HEARTBEAT, {}), 20000);
+  };
+
+  ws.onmessage = (ev) => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch(e) { return; }
+    handleMessage(m);
+  };
+
+  ws.onclose = () => {
+    clearInterval(state.hbTimer);
+    if(!state.accountReady){
+      btn.disabled = false; btn.textContent = 'Connect account';
+      $('errorLine').textContent = 'Connection closed before finishing — check your credentials and try again.';
+    } else {
+      log('Connection dropped — reconnecting in 2s…');
+      setTimeout(connect, 2000);
+    }
+  };
+
+  ws.onerror = () => {
+    log('WebSocket error.');
+  };
+}
+
+function handleMessage(m){
+  const pt = m.payloadType, p = m.payload || {};
+  switch(pt){
+    case PT.APP_AUTH_RES:
+      log('App authorized. Fetching trading accounts…');
+      send(PT.GET_ACCOUNTS_REQ, { accessToken: state.accessToken });
+      break;
+
+    case PT.GET_ACCOUNTS_RES: {
+      const accs = p.ctidTraderAccount || [];
+      const wantLive = state.env === 'live';
+      const acc = accs.find(a => !!a.isLive === wantLive) || accs[0];
+      if(!acc){ log('No trading account found on this token.'); return; }
+      state.accountId = acc.ctidTraderAccountId;
+      log('Found account ' + state.accountId + '. Authorizing…');
+      send(PT.ACC_AUTH_REQ, { ctidTraderAccountId: state.accountId, accessToken: state.accessToken });
+      break;
+    }
+
+    case PT.ACC_AUTH_RES:
+      state.accountReady = true;
+      log('Account authorized.');
+      send(PT.TRADER_REQ, { ctidTraderAccountId: state.accountId });
+      send(PT.SYMBOLS_LIST_REQ, { ctidTraderAccountId: state.accountId });
+      send(PT.RECONCILE_REQ, { ctidTraderAccountId: state.accountId, returnProtectionOrders: true });
+      onConnected();
+      break;
+
+    case PT.TRADER_RES:
+      // NOTE: verify this field against your real account on demo first —
+      // cTrader typically returns balance in the account's smallest unit.
+      state.balance = p.trader && p.trader.balance != null ? p.trader.balance / 100 : null;
+      updateDashboard();
+      break;
+
+    case PT.SYMBOLS_LIST_RES: {
+      const list = p.symbol || [];
+      list.forEach(s => { state.symbolsById[s.symbolId] = s; });
+      const match = list.find(s => (s.symbolName || '').replace('/', '').toUpperCase() === state.symbol);
+      if(match){
+        state.symbolId = match.symbolId;
+        send(PT.SUBSCRIBE_SPOTS_REQ, { ctidTraderAccountId: state.accountId, symbolId: [state.symbolId] });
+        log('Subscribed to ' + state.symbol + '.');
+      } else {
+        log('Could not find symbol "' + state.symbol + '" in this account\'s symbol list.');
+      }
+      break;
+    }
+
+    case PT.RECONCILE_RES:
+      state.positions = p.position || [];
+      updateDashboard();
+      break;
+
+    case PT.SPOT_EVENT:
+      onSpot(p);
+      break;
+
+    case PT.EXECUTION_EVENT:
+      log('Execution event received.');
+      send(PT.RECONCILE_REQ, { ctidTraderAccountId: state.accountId, returnProtectionOrders: true });
+      break;
+
+    case PT.ORDER_ERROR_EVENT:
+      state.lastError = (p.errorCode || 'ORDER_ERROR') + (p.description ? ': ' + p.description : '');
+      log('Order error: ' + state.lastError);
+      updateDashboard();
+      break;
+
+    case PT.ERROR_RES:
+      state.lastError = p.errorCode || 'ERROR';
+      log('API error: ' + state.lastError + (p.description ? ' — ' + p.description : ''));
+      updateDashboard();
+      break;
+  }
+}
+
+// ---- price stream -> candles -> strategy ------------------------------
+function onSpot(p){
+  if(p.symbolId !== state.symbolId) return;
+  const bid = p.bid ? p.bid / 1e5 : null;
+  const ask = p.ask ? p.ask / 1e5 : null;
+  if(!bid && !ask) return;
+  state.bid = bid || state.bid;
+  state.ask = ask || state.ask;
+  const mid = ((state.bid || 0) + (state.ask || 0)) / 2 || state.bid || state.ask;
+
+  pushToBars(mid);
+
+  const signal = generateSignal(state.bars);
+  if(signal) maybeTrade(signal);
+}
+
+function pushToBars(price){
+  const now = Math.floor(Date.now() / 60000) * 60000;
+  if(!state.currentBar || state.currentBar.t !== now){
+    if(state.currentBar) {
+      state.bars.push(state.currentBar);
+      if(state.bars.length > 200) state.bars.shift();
+    }
+    state.currentBar = { t: now, o: price, h: price, l: price, c: price };
+  } else {
+    state.currentBar.h = Math.max(state.currentBar.h, price);
+    state.currentBar.l = Math.min(state.currentBar.l, price);
+    state.currentBar.c = price;
+  }
+}
+
+// Small inline indicator implementations (no external libraries in the browser).
+function ema(values, period){
+  const k = 2 / (period + 1);
+  const out = [];
+  values.forEach((v, i) => {
+    out.push(i === 0 ? v : v * k + out[i-1] * (1-k));
+  });
+  return out;
+}
+function rsi(values, period){
+  const out = new Array(values.length).fill(null);
+  let gains = 0, losses = 0;
+  for(let i=1;i<values.length;i++){
+    const diff = values[i]-values[i-1];
+    const gain = Math.max(diff,0), loss = Math.max(-diff,0);
+    if(i <= period){
+      gains += gain; losses += loss;
+      if(i === period){
+        const rs = losses === 0 ? 100 : gains/losses;
+        out[i] = 100 - (100/(1+rs));
+      }
+    } else {
+      gains = (gains*(period-1)+gain)/period;
+      losses = (losses*(period-1)+loss)/period;
+      const rs = losses === 0 ? 100 : gains/losses;
+      out[i] = 100 - (100/(1+rs));
+    }
+  }
+  return out;
+}
+function bollinger(values, period, mult){
+  const out = new Array(values.length).fill(null);
+  for(let i=period-1;i<values.length;i++){
+    const slice = values.slice(i-period+1, i+1);
+    const mean = slice.reduce((a,b)=>a+b,0)/period;
+    const variance = slice.reduce((a,b)=>a+(b-mean)*(b-mean),0)/period;
+    const sd = Math.sqrt(variance);
+    out[i] = { mid:mean, upper:mean+mult*sd, lower:mean-mult*sd };
+  }
+  return out;
+}
+
+function generateSignal(bars){
+  if(bars.length < 25) return null;
+  const closes = bars.map(b => b.c);
+  const ema9 = ema(closes, 9);
+  const ema21 = ema(closes, 21);
+  const rsi14 = rsi(closes, 14);
+  const bb = bollinger(closes, 20, 2);
+
+  const i = closes.length - 1;
+  const bbLast = bb[i];
+  if(!bbLast || rsi14[i] == null) return null;
+
+  const crossedUp = ema9[i-1] <= ema21[i-1] && ema9[i] > ema21[i];
+  const crossedDown = ema9[i-1] >= ema21[i-1] && ema9[i] < ema21[i];
+
+  if(crossedUp && rsi14[i] > 50 && closes[i] <= bbLast.lower) return 'buy';
+  if(crossedDown && rsi14[i] < 50 && closes[i] >= bbLast.upper) return 'sell';
+  return null;
+}
+
+// ---- risk + order placement --------------------------------------------
+function dailyLossHalted(){
+  const today = new Date().toISOString().slice(0,10);
+  if(state.dayKey !== today){
+    state.dayKey = today;
+    state.dayStartBalance = state.balance;
+  }
+  if(state.dayStartBalance == null || state.balance == null) return false;
+  const lossPercent = ((state.dayStartBalance - state.balance) / state.dayStartBalance) * 100;
+  return lossPercent >= MAX_DAILY_LOSS_PERCENT;
+}
+
+function maybeTrade(signal){
+  if(!state.running) return;
+  if(!state.accountReady || state.balance == null) return;
+  if(dailyLossHalted()){
+    state.running = false;
+    state.lastError = 'Daily loss limit reached — bot auto-stopped.';
+    updateDashboard();
+    return;
+  }
+  if(state.lastSignalAt && Date.now() - state.lastSignalAt < 60000) return;
+
+  placeOrder(signal);
+  state.lastSignalAt = Date.now();
+}
+
+function placeOrder(signal){
+  const pip = PIP[state.symbol] || 0.0001;
+  const riskAmount = state.balance * (RISK_PERCENT / 100);
+
+  // Volume scaling: cTrader's NEW_ORDER_REQ volume field is generally
+  // expressed in hundredths of a unit of the base currency (so 1.00 standard
+  // lot = 100000 units = volume 10000000). VERIFY this against a real demo
+  // fill before trusting it on a live account — brokers occasionally differ.
+  const pipValuePerLot = 10; // approx for major FX pairs at 1.0 lot — verify per symbol
+  const rawLots = riskAmount / (STOP_LOSS_PIPS * pipValuePerLot);
+  const lots = Math.max(0.01, Math.min(Math.floor(rawLots*100)/100, 5));
+  const volume = Math.round(lots * 100000 * 100);
+
+  const relSL = Math.round(STOP_LOSS_PIPS * pip * 100000);
+  const relTP = Math.round(TAKE_PROFIT_PIPS * pip * 100000);
+
+  send(PT.NEW_ORDER_REQ, {
+    ctidTraderAccountId: state.accountId,
+    symbolId: state.symbolId,
+    orderType: 1, // market
+    tradeSide: signal === 'buy' ? 1 : 2,
+    volume,
+    relativeStopLoss: relSL,
+    relativeTakeProfit: relTP,
+    label: 'scalper-bot'
+  });
+
+  log((signal === 'buy' ? 'BUY' : 'SELL') + ' ' + lots + ' lots ' + state.symbol);
+}
+
+// ---- UI ------------------------------------------------------------------
+function onConnected(){
+  document.getElementById('loginScreen').classList.remove('active');
+  document.getElementById('dashScreen').classList.add('active');
+  updateDashboard();
+}
+
+function updateDashboard(){
+  $('metAccount').textContent = state.accountId || '—';
+  $('metEnv').textContent = state.env;
+  $('metBalance').textContent = state.balance != null ? state.balance.toFixed(2) : '—';
+  $('metTrades').textContent = state.positions.length;
+  $('stopIcon').textContent = state.running ? '⏸' : '▶';
+  $('stopLabel').textContent = state.running ? 'Stop' : 'Start';
+  $('engineStatus').innerHTML = 'Signal engine: ' +
+    (state.running
+      ? '<span class="live">live — watching ' + state.symbol + '</span>'
+      : '<span class="halted">stopped' + (state.lastError ? ' — ' + state.lastError : '') + '</span>');
+}
+setInterval(updateDashboard, 3000);
+
+$('connectBtn').addEventListener('click', connect);
+
+$('stopBtn').addEventListener('click', () => {
+  state.running = !state.running;
+  updateDashboard();
+});
+
+$('removeBtn').addEventListener('click', () => {
+  if(!confirm('Disconnect and remove the bot?')) return;
+  if(state.ws) state.ws.close();
+  location.reload();
+});
+
+$('quotesBtn').addEventListener('click', () => {
+  alert(state.bid && state.ask
+    ? state.symbol + '  bid: ' + state.bid + '  ask: ' + state.ask
+    : 'No live price yet.');
+});
+</script>
+
+</body>
+</html>
