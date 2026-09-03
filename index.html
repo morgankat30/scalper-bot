@@ -179,6 +179,17 @@
         <label>Minimum seconds between trades</label>
         <input type="number" id="cfgCooldown" step="1" value="5">
       </div>
+      <div class="field">
+        <label>RSI period (lower = faster/more sensitive, e.g. 6)</label>
+        <input type="number" id="cfgRsiPeriod" step="1" value="6">
+      </div>
+      <div class="field">
+        <label>Confirmations required to fire (2 of 3 = faster, 3 of 3 = stricter)</label>
+        <select id="cfgConfluence">
+          <option value="2">2 of 3 (EMA cross + RSI OR Bollinger)</option>
+          <option value="3">3 of 3 (EMA cross + RSI + Bollinger, all together)</option>
+        </select>
+      </div>
       <button class="connect-btn" id="saveSettingsBtn" style="margin-top:4px;">Save settings</button>
     </div>
 
@@ -242,6 +253,8 @@ const settings = {
   takeProfitPips: 8,
   timeframeSeconds: 15, // smaller = faster candles = more frequent signal checks
   cooldownSeconds: 5,   // minimum gap between trades
+  rsiPeriod: 6,          // lower = more sensitive/faster RSI
+  confluenceRequired: 2, // 2 of 3 conditions (faster) vs 3 of 3 (stricter)
 };
 
 const PIP = { EURUSD:0.0001, GBPUSD:0.0001, USDJPY:0.01, XAUUSD:0.01 };
@@ -301,6 +314,8 @@ function loadSavedSettings(){
   $('cfgTP').value = settings.takeProfitPips;
   $('cfgTf').value = settings.timeframeSeconds;
   $('cfgCooldown').value = settings.cooldownSeconds;
+  $('cfgRsiPeriod').value = settings.rsiPeriod;
+  $('cfgConfluence').value = String(settings.confluenceRequired);
 }
 function saveSettingsFromForm(){
   const lot = parseFloat($('cfgLotSize').value);
@@ -310,10 +325,13 @@ function saveSettingsFromForm(){
   settings.takeProfitPips = parseFloat($('cfgTP').value) || 8;
   settings.timeframeSeconds = Math.max(1, parseInt($('cfgTf').value, 10) || 15);
   settings.cooldownSeconds = Math.max(1, parseInt($('cfgCooldown').value, 10) || 5);
+  settings.rsiPeriod = Math.max(2, parseInt($('cfgRsiPeriod').value, 10) || 6);
+  settings.confluenceRequired = parseInt($('cfgConfluence').value, 10) === 3 ? 3 : 2;
   localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   log('Settings saved: ' + (settings.fixedLotSize ? settings.fixedLotSize + ' lots fixed' : settings.riskPercent + '% risk')
     + ', SL ' + settings.stopLossPips + 'p, TP ' + settings.takeProfitPips + 'p, '
-    + settings.timeframeSeconds + 's candles, ' + settings.cooldownSeconds + 's cooldown.');
+    + settings.timeframeSeconds + 's candles, RSI(' + settings.rsiPeriod + '), '
+    + settings.confluenceRequired + '-of-3 confirmations.');
   $('settingsPanel').style.display = 'none';
 }
 $('settingsToggle').addEventListener('click', () => {
@@ -621,23 +639,42 @@ function bollinger(values, period, mult){
   return out;
 }
 
+let lastEvalLog = 0;
 function generateSignal(bars){
   if(bars.length < 25) return null;
   const closes = bars.map(b => b.c);
   const ema9 = ema(closes, 9);
   const ema21 = ema(closes, 21);
-  const rsi14 = rsi(closes, 14);
+  const rsiVals = rsi(closes, settings.rsiPeriod);
   const bb = bollinger(closes, 20, 2);
 
   const i = closes.length - 1;
   const bbLast = bb[i];
-  if(!bbLast || rsi14[i] == null) return null;
+  if(!bbLast || rsiVals[i] == null) return null;
 
   const crossedUp = ema9[i-1] <= ema21[i-1] && ema9[i] > ema21[i];
   const crossedDown = ema9[i-1] >= ema21[i-1] && ema9[i] < ema21[i];
+  const rsiBull = rsiVals[i] > 50;
+  const rsiBear = rsiVals[i] < 50;
+  const bbLow = closes[i] <= bbLast.lower;
+  const bbHigh = closes[i] >= bbLast.upper;
 
-  if(crossedUp && rsi14[i] > 50 && closes[i] <= bbLast.lower) return 'buy';
-  if(crossedDown && rsi14[i] < 50 && closes[i] >= bbLast.upper) return 'sell';
+  const bullScore = (crossedUp?1:0) + (rsiBull?1:0) + (bbLow?1:0);
+  const bearScore = (crossedDown?1:0) + (rsiBear?1:0) + (bbHigh?1:0);
+  const need = settings.confluenceRequired; // 2-of-3 (faster) or 3-of-3 (stricter)
+
+  // Throttled visibility into what the engine is actually seeing, so the
+  // dashboard doesn't look frozen during quiet stretches.
+  if(Date.now() - lastEvalLog > 8000){
+    lastEvalLog = Date.now();
+    log('RSI(' + settings.rsiPeriod + ') ' + rsiVals[i].toFixed(1)
+      + ' | EMA9 ' + (ema9[i]>ema21[i]?'>':'<') + ' EMA21'
+      + ' | BB ' + (bbLow?'@lower':bbHigh?'@upper':'mid')
+      + ' | bull ' + bullScore + '/3, bear ' + bearScore + '/3 (need ' + need + ')');
+  }
+
+  if(bullScore >= need && crossedUp) return 'buy';
+  if(bearScore >= need && crossedDown) return 'sell';
   return null;
 }
 
