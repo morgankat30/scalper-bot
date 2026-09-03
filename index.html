@@ -216,11 +216,11 @@
 
       <div class="settings-section">Position sizing</div>
       <div class="field">
-        <label>Fixed lot size (leave blank to auto-size by risk %)</label>
-        <input type="number" id="cfgLotSize" step="0.01" placeholder="e.g. 0.01">
+        <label>Lot size (always used exactly as typed)</label>
+        <input type="number" id="cfgLotSize" step="0.01" value="0.01">
       </div>
       <div class="field">
-        <label>Risk % per trade (only used if lot size is blank)</label>
+        <label>Risk % per trade (only used if lot size field is cleared blank)</label>
         <input type="number" id="cfgRisk" step="0.1" value="1">
       </div>
 
@@ -378,7 +378,7 @@ const state = {
 };
 
 const settings = {
-  fixedLotSize:null, riskPercent:1,
+  fixedLotSize:0.01, riskPercent:1,
   stopLossPips:5, takeProfitPips:8,
   atrEnabled:false, atrPeriod:14, atrSlMult:1.5, atrTpMult:2.5,
   timeframeSeconds:15, cooldownSeconds:5,
@@ -1059,9 +1059,11 @@ function computeLots(bal, slPipsEquivalent){
 function placeOrder(signal){
   const { slPrice, tpPrice, slPipsEquivalent } = getStopDistances();
   const lots = computeLots(state.balance, slPipsEquivalent);
-  // Use the broker's real lot size for this symbol (varies for metals/
-  // crypto/indices), not a hardcoded FX assumption of 100000 units/lot.
-  const volume = Math.round(lots * state.symbolLotUnits * 100);
+  // lotSize from the broker is already the full raw volume value for 1.0
+  // lot (e.g. 10000 for this account's gold, 10000000 for EURUSD) — do NOT
+  // multiply by 100 again on top of that, that was the actual bug that
+  // made every order come out 100x too large and get rejected.
+  const volume = Math.round(lots * state.symbolLotUnits);
 
   // cTrader requires the relative SL/TP to land exactly on this symbol's
   // real price grid (its `digits`), not assume forex's 5-decimal precision.
