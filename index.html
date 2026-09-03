@@ -96,6 +96,16 @@
   .toggle-row{ display:flex; align-items:center; justify-content:space-between; background:var(--card);
     border-radius:12px; padding:10px 14px; margin-bottom:8px; }
   .toggle-row label{ font-size:13px; color:var(--text-dark); font-weight:600; }
+  .pos-row{ background:var(--card); border-radius:10px; padding:8px 12px; margin-bottom:6px;
+    display:flex; align-items:center; gap:8px; font-size:12px; }
+  .pos-row .side{ font-weight:800; padding:2px 6px; border-radius:5px; font-size:10px; color:#fff; }
+  .pos-row .side.long{ background:var(--ok); }
+  .pos-row .side.short{ background:var(--danger); }
+  .pos-row .info{ flex:1; color:var(--text-dark); line-height:1.4; }
+  .pos-row .pnl{ font-weight:700; }
+  .pos-row .pnl.pos{ color:var(--ok); }
+  .pos-row .pnl.neg{ color:var(--danger); }
+  .pos-row .close-x{ background:#0d1117; color:#fff; border:none; border-radius:6px; padding:4px 8px; font-size:11px; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -236,6 +246,10 @@
         <label>Minimum seconds between trades</label>
         <input type="number" id="cfgCooldown" step="1" value="5">
       </div>
+      <div class="field">
+        <label>Max open trades at once (blocks new signals past this)</label>
+        <input type="number" id="cfgMaxTrades" step="1" value="3">
+      </div>
 
       <div class="settings-section">Strategy 1 — EMA/RSI/Bollinger confluence</div>
       <div class="toggle-row">
@@ -285,6 +299,9 @@
       <div class="metric"><div class="label">Open trades</div><div class="value" id="metTrades">0</div></div>
     </div>
 
+    <div class="settings-section" style="margin-top:10px;">Open trades <span id="closeAllBtn" style="float:right; color:var(--danger); cursor:pointer; text-transform:none; font-weight:700;">Close all</span></div>
+    <div id="positionsList" style="margin-bottom:6px;"></div>
+
     <div class="status-line" id="engineStatus">Signal engine: <span class="live">connecting…</span></div>
     <div class="log-box" id="logBox"></div>
   </div>
@@ -319,7 +336,8 @@ const PT = {
   EXECUTION_EVENT:2126, SUBSCRIBE_SPOTS_REQ:2127, UNSUBSCRIBE_SPOTS_REQ:2129,
   SPOT_EVENT:2131, ORDER_ERROR_EVENT:2132, ERROR_RES:2142,
   GET_ACCOUNTS_REQ:2149, GET_ACCOUNTS_RES:2150,
-  GET_TRENDBARS_REQ:2137, GET_TRENDBARS_RES:2138, HEARTBEAT:51
+  GET_TRENDBARS_REQ:2137, GET_TRENDBARS_RES:2138, HEARTBEAT:51,
+  CLOSE_POSITION_REQ:2111
 };
 const TF_PERIODS = { 1:'M1', 5:'M5', 15:'M15', 30:'M30', 60:'H1' };
 const PIP = { EURUSD:0.0001, GBPUSD:0.0001, USDJPY:0.01, XAUUSD:0.01 };
@@ -350,7 +368,7 @@ const settings = {
   rsiPeriod:6, confluenceRequired:2, confluenceEnabled:true,
   rsiExtremeEnabled:false, rsiOversold:15, rsiOverbought:85,
   structureEnabled:false, structureLookback:20,
-  paperMode:true,
+  paperMode:true, maxOpenTrades:3,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -405,6 +423,7 @@ function loadSavedSettings(){
   $('cfgAtrTpMult').value = settings.atrTpMult;
   $('cfgTf').value = settings.timeframeSeconds;
   $('cfgCooldown').value = settings.cooldownSeconds;
+  $('cfgMaxTrades').value = settings.maxOpenTrades;
   $('cfgConfluenceEnabled').checked = settings.confluenceEnabled;
   $('cfgRsiPeriod').value = settings.rsiPeriod;
   $('cfgConfluence').value = String(settings.confluenceRequired);
@@ -428,6 +447,7 @@ function saveSettingsFromForm(){
   settings.atrTpMult = parseFloat($('cfgAtrTpMult').value) || 2.5;
   settings.timeframeSeconds = Math.max(1, parseInt($('cfgTf').value, 10) || 15);
   settings.cooldownSeconds = Math.max(1, parseInt($('cfgCooldown').value, 10) || 5);
+  settings.maxOpenTrades = Math.max(1, parseInt($('cfgMaxTrades').value, 10) || 3);
   settings.confluenceEnabled = $('cfgConfluenceEnabled').checked;
   settings.rsiPeriod = Math.max(2, parseInt($('cfgRsiPeriod').value, 10) || 6);
   settings.confluenceRequired = parseInt($('cfgConfluence').value, 10) === 3 ? 3 : 2;
@@ -902,11 +922,17 @@ function maybeTrade(signal){
   }
   if(state.lastSignalAt && Date.now() - state.lastSignalAt < settings.cooldownSeconds * 1000) return;
 
+  const openCount = settings.paperMode ? state.paperPositions.length : state.positions.length;
+  if(openCount >= settings.maxOpenTrades){
+    log('Max open trades (' + settings.maxOpenTrades + ') reached — skipping ' + (signal==='buy'?'LONG':'SHORT') + ' signal.');
+    return;
+  }
+
+  log('🔥 Firing ' + (signal==='buy' ? 'LONG' : 'SHORT') + ' trade — setting up entry, SL, TP now.');
   if(settings.paperMode) openPaperTrade(signal);
   else placeOrder(signal);
   state.lastSignalAt = Date.now();
 }
-
 function computeLots(bal, slPipsEquivalent){
   if(settings.fixedLotSize) return settings.fixedLotSize;
   const riskAmount = bal * (settings.riskPercent / 100);
@@ -927,7 +953,7 @@ function placeOrder(signal){
     orderType: 1, tradeSide: signal === 'buy' ? 1 : 2, volume,
     relativeStopLoss: relSL, relativeTakeProfit: relTP, label: 'scalper-bot'
   });
-  log((signal==='buy'?'BUY':'SELL')+' '+lots+' lots '+state.symbol+' (real order)');
+  log((signal==='buy'?'LONG':'SHORT')+' '+lots+' lots '+state.symbol+' (real order)');
 }
 
 function openPaperTrade(signal){
@@ -941,7 +967,7 @@ function openPaperTrade(signal){
     tp: signal==='buy' ? entry + tpPrice : entry - tpPrice,
   };
   state.paperPositions.push(pos);
-  log((signal==='buy'?'BUY':'SELL')+' '+lots+' lots '+state.symbol+' @ '+entry.toFixed(5)+' (PAPER)');
+  log((signal==='buy'?'LONG':'SHORT')+' '+lots+' lots '+state.symbol+' @ '+entry.toFixed(5)+' (PAPER)');
 }
 
 function checkPaperPositions(){
@@ -962,6 +988,72 @@ function checkPaperPositions(){
   });
   updateDashboard();
 }
+
+// ---- close positions (real or paper) -------------------------------------
+function closeRealPosition(positionId, volume){
+  send(PT.CLOSE_POSITION_REQ, { ctidTraderAccountId: state.accountId, positionId, volume });
+  log('Closing position ' + positionId + '…');
+}
+function closePaperPosition(id){
+  const idx = state.paperPositions.findIndex(p => p.id === id);
+  if(idx === -1) return;
+  const pos = state.paperPositions[idx];
+  const price = state.bid && state.ask ? (state.bid+state.ask)/2 : pos.entry;
+  const pip = PIP[state.symbol] || 0.0001;
+  const pips = pos.side==='buy' ? (price-pos.entry)/pip : (pos.entry-price)/pip;
+  const pnl = pips * 10 * pos.lots;
+  state.paperBalance += pnl;
+  state.paperPositions.splice(idx,1);
+  log('Manually closed ' + pos.side + ' ' + state.symbol + ' — paper P&L ' + (pnl>=0?'+':'') + pnl.toFixed(2));
+  renderPositions();
+}
+$('closeAllBtn').addEventListener('click', () => {
+  if(!confirm('Close all open trades?')) return;
+  if(settings.paperMode){
+    [...state.paperPositions].forEach(p => closePaperPosition(p.id));
+  } else {
+    state.positions.forEach(p => closeRealPosition(p.positionId, p.tradeData ? p.tradeData.volume : 0));
+  }
+});
+
+function renderPositions(){
+  const box = $('positionsList');
+  const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
+  const pip = PIP[state.symbol] || 0.0001;
+
+  if(settings.paperMode){
+    if(!state.paperPositions.length){ box.innerHTML = '<div style="color:var(--text-mid); font-size:12px; text-align:center; padding:6px;">No open trades.</div>'; return; }
+    box.innerHTML = state.paperPositions.map(pos => {
+      const pips = price ? (pos.side==='buy' ? (price-pos.entry)/pip : (pos.entry-price)/pip) : 0;
+      const pnl = pips * 10 * pos.lots;
+      return '<div class="pos-row">' +
+        '<span class="side ' + (pos.side==='buy'?'long':'short') + '">' + (pos.side==='buy'?'LONG':'SHORT') + '</span>' +
+        '<span class="info">' + state.symbol + ' · ' + pos.lots + ' lots<br>entry ' + pos.entry.toFixed(5) + '</span>' +
+        '<span class="pnl ' + (pnl>=0?'pos':'neg') + '">' + (pnl>=0?'+':'') + pnl.toFixed(2) + '</span>' +
+        '<button class="close-x" data-id="' + pos.id + '">Close</button>' +
+      '</div>';
+    }).join('');
+    box.querySelectorAll('.close-x').forEach(btn => btn.addEventListener('click', () => closePaperPosition(btn.dataset.id)));
+  } else {
+    if(!state.positions.length){ box.innerHTML = '<div style="color:var(--text-mid); font-size:12px; text-align:center; padding:6px;">No open trades.</div>'; return; }
+    box.innerHTML = state.positions.map(pos => {
+      const td = pos.tradeData || {};
+      const side = td.tradeSide === 1 ? 'buy' : 'sell';
+      const entry = pos.price; // already a real decimal price, not 1e5-scaled
+      const vol = (td.volume || 0) / 100000; // volume is in hundredths of a unit
+      const pips = price && entry ? (side==='buy' ? (price-entry)/pip : (entry-price)/pip) : 0;
+      const pnl = pips * 10 * vol;
+      return '<div class="pos-row">' +
+        '<span class="side ' + (side==='buy'?'long':'short') + '">' + (side==='buy'?'LONG':'SHORT') + '</span>' +
+        '<span class="info">' + state.symbol + ' · ' + vol.toFixed(2) + ' lots<br>entry ' + (entry!=null?entry.toFixed(5):'—') + '</span>' +
+        '<span class="pnl ' + (pnl>=0?'pos':'neg') + '">' + (pnl>=0?'+':'') + pnl.toFixed(2) + ' (est.)</span>' +
+        '<button class="close-x" data-id="' + pos.positionId + '" data-vol="' + (td.volume||0) + '">Close</button>' +
+      '</div>';
+    }).join('');
+    box.querySelectorAll('.close-x').forEach(btn => btn.addEventListener('click', () => closeRealPosition(parseInt(btn.dataset.id,10), parseInt(btn.dataset.vol,10))));
+  }
+}
+setInterval(renderPositions, 3000);
 
 // ---- env switch -----------------------------------------------------------
 function switchEnv(newEnv){
