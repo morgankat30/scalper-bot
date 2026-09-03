@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Scalper Console — Pepperstone / cTrader</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root{
     --bg:#0d1117; --card:#f5f6f8; --accent:#1a2540;
@@ -14,7 +15,7 @@
   *{box-sizing:border-box;}
   body{ margin:0; font-family:var(--font); background:var(--bg); min-height:100vh;
     display:flex; align-items:center; justify-content:center; padding:24px 12px; }
-  .phone{ width:100%; max-width:380px; background:var(--bg); border-radius:28px; overflow:hidden;
+  .phone{ width:100%; max-width:400px; background:var(--bg); border-radius:28px; overflow:hidden;
     box-shadow:0 0 0 8px #1c2128, 0 20px 60px rgba(0,0,0,.5); min-height:640px; }
   .screen{ display:none; padding:18px 16px 26px; }
   .screen.active{ display:block; }
@@ -40,43 +41,61 @@
   .error-line{ margin-top:8px; color:var(--danger); font-size:11px; text-align:center; }
   .setup-link{ color:#6fa8ff; font-size:11px; text-align:center; display:block; margin-top:10px; }
 
-  .dash-header{ text-align:center; padding:6px 0 18px; }
+  .dash-header{ text-align:center; padding:6px 0 14px; position:relative; }
   .dash-header .eyebrow{ color:#8a93a6; font-size:12px; margin-bottom:14px; }
-  .bot-badge{ width:88px;height:88px;border-radius:50%; background:linear-gradient(155deg,#1e2a44,#0d1117);
-    border:2px solid #2b3650; display:flex;align-items:center;justify-content:center; margin:0 auto 12px; font-size:34px; }
-  .bot-name{ color:#fff; font-size:17px; font-weight:700; margin-bottom:2px; }
+  .bot-badge{ width:72px;height:72px;border-radius:50%; background:linear-gradient(155deg,#1e2a44,#0d1117);
+    border:2px solid #2b3650; display:flex;align-items:center;justify-content:center; margin:0 auto 10px; font-size:28px; }
+  .bot-name{ color:#fff; font-size:16px; font-weight:700; margin-bottom:2px; }
   .bot-sub{ color:#6b7280; font-size:12px; }
-  .trading-with{ color:#8a93a6; font-size:12px; margin:16px 0 4px; }
-  .trading-with strong{ color:#fff; display:block; font-size:15px; margin-top:2px; }
+
+  .env-switch{ display:flex; justify-content:center; gap:6px; margin-top:10px; }
+  .env-btn{ border:1px solid #2b3650; background:none; color:#8a93a6; font-size:11px; font-weight:700;
+    padding:6px 14px; border-radius:20px; cursor:pointer; }
+  .env-btn.active{ background:#fff; color:var(--text-dark); border-color:#fff; }
+  .env-btn.live-active{ background:var(--danger); color:#fff; border-color:var(--danger); }
 
   .control-row{ display:flex; justify-content:space-around; background:var(--card);
-    border-radius:16px; padding:14px 8px; margin:18px 0 12px; }
+    border-radius:16px; padding:14px 8px; margin:14px 0 10px; }
   .ctrl{ display:flex;flex-direction:column;align-items:center;gap:6px; color:var(--text-dark);
     font-size:11px; font-weight:600; background:none;border:none; cursor:pointer; }
-  .ctrl .circle{ width:42px;height:42px;border-radius:50%; background:#0d1117;
-    display:flex;align-items:center;justify-content:center; color:#fff; font-size:16px; }
+  .ctrl .circle{ width:40px;height:40px;border-radius:50%; background:#0d1117;
+    display:flex;align-items:center;justify-content:center; color:#fff; font-size:15px; }
   .ctrl.danger .circle{ background:var(--danger); }
 
-  .active-card{ background:var(--accent); border-radius:14px; padding:12px 14px;
-    display:flex; align-items:center; gap:12px; }
-  .active-card .glyph{ width:30px;height:30px;border-radius:7px; background:#f97316;
-    display:flex;align-items:center;justify-content:center; font-size:12px;color:#fff;flex-shrink:0; font-weight:700;}
-  .active-card .name{ color:#fff; font-weight:600; font-size:14px; flex:1; }
-  .active-card .check{ color:var(--ok); font-size:16px; }
+  .active-card{ background:var(--accent); border-radius:14px; padding:10px 14px;
+    display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+  .active-card .glyph{ width:28px;height:28px;border-radius:7px; background:#f97316;
+    display:flex;align-items:center;justify-content:center; font-size:11px;color:#fff;flex-shrink:0; font-weight:700;}
+  .active-card .name{ color:#fff; font-weight:600; font-size:13px; flex:1; }
+  .active-card .check{ color:var(--ok); font-size:15px; }
+  .active-card.paper{ background:#5b3a1a; }
 
-  .metrics{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
-  .metric{ background:var(--card); border-radius:12px; padding:12px 14px; }
+  .chart-wrap{ background:var(--card); border-radius:12px; padding:8px; margin-bottom:10px; }
+  .tf-row{ display:flex; gap:4px; margin-bottom:6px; }
+  .tf-btn{ flex:1; border:none; background:#e2e5ea; color:var(--text-dark); font-size:11px; font-weight:700;
+    padding:6px 0; border-radius:8px; cursor:pointer; }
+  .tf-btn.active{ background:#0d1117; color:#fff; }
+  #chartContainer{ width:100%; height:160px; }
+
+  .metrics{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:4px; }
+  .metric{ background:var(--card); border-radius:12px; padding:10px 14px; }
   .metric .label{ color:var(--text-mid); font-size:11px; }
-  .metric .value{ color:var(--text-dark); font-size:16px; font-weight:700; margin-top:2px; }
+  .metric .value{ color:var(--text-dark); font-size:15px; font-weight:700; margin-top:2px; }
 
-  .status-line{ margin-top:14px; color:#6b7280; font-size:11px; text-align:center; line-height:1.6; }
+  .status-line{ margin-top:12px; color:#6b7280; font-size:11px; text-align:center; line-height:1.6; }
   .status-line .live{ color:var(--ok); font-weight:700; }
   .status-line .halted{ color:var(--danger); font-weight:700; }
-  .log-box{ margin-top:10px; background:#000; border-radius:10px; padding:8px 10px; height:70px;
+  .log-box{ margin-top:8px; background:#000; border-radius:10px; padding:8px 10px; height:64px;
     overflow-y:auto; font-size:10px; color:#7d8590; font-family:monospace; }
   .pair-row{ padding:10px 14px; font-size:13px; color:var(--text-dark); cursor:pointer; border-bottom:1px solid #e2e5ea; }
   .pair-row:last-child{ border-bottom:none; }
-  .pair-row:active{ background:#e2e5ea; }
+
+  .add-btn{ width:100%; background:var(--card); color:var(--text-dark); border:none; border-radius:12px;
+    padding:10px; font-size:12px; font-weight:600; cursor:pointer; margin-bottom:8px; }
+  .settings-section{ font-size:11px; font-weight:700; color:var(--text-mid); margin:10px 0 4px; text-transform:uppercase; }
+  .toggle-row{ display:flex; align-items:center; justify-content:space-between; background:var(--card);
+    border-radius:12px; padding:10px 14px; margin-bottom:8px; }
+  .toggle-row label{ font-size:13px; color:var(--text-dark); font-weight:600; }
 </style>
 </head>
 <body>
@@ -110,6 +129,9 @@
         <input type="password" id="ctTok" placeholder="paste access token">
       </div>
       <div class="field">
+        <label><input type="checkbox" id="ctPaper" style="width:auto;display:inline;margin-right:6px;">Start in Paper mode (simulated trades, no real orders)</label>
+      </div>
+      <div class="field">
         <label>Broker</label>
         <div class="platform-row">
           <div class="glyph">PS</div>
@@ -119,7 +141,7 @@
       <button class="connect-btn" id="connectBtn">Connect account</button>
     </div>
 
-    <div class="hint">Connects straight from this page to cTrader's own servers — the same free Open API Pepperstone runs on. Nothing routes through a third-party bridge.</div>
+    <div class="hint">Connects straight from this page to cTrader's own servers. Nothing routes through a third-party bridge.</div>
     <a class="setup-link" href="https://openapi.ctrader.com" target="_blank">Need a Client ID/Secret? Register a free app at openapi.ctrader.com →</a>
     <a class="setup-link" href="#" id="forgetLoginLink" style="display:none;">Forget saved login on this device</a>
     <div class="error-line" id="errorLine"></div>
@@ -130,31 +152,52 @@
     <div class="dash-header">
       <div class="eyebrow">THIS IS AN INTRADAY TRADING ROBOT</div>
       <div class="bot-badge">🦅</div>
-      <div class="bot-name" id="botTitle">EDGE SCALPER</div>
-      <div class="bot-sub">Pepperstone · cTrader · EMA/RSI/BB</div>
-      <div class="trading-with">You are trading with<strong id="botTradingWith">EDGE SCALPER</strong></div>
+      <div class="bot-name">EDGE SCALPER</div>
+      <div class="bot-sub">Pepperstone · cTrader · EMA/RSI/BB/Structure</div>
+      <div class="env-switch">
+        <button class="env-btn" id="envDemoBtn">DEMO</button>
+        <button class="env-btn" id="envLiveBtn">LIVE</button>
+      </div>
     </div>
 
     <div class="control-row">
       <button class="ctrl danger" id="removeBtn"><span class="circle">🗑</span>Remove</button>
-      <button class="ctrl" id="stopBtn"><span class="circle" id="stopIcon">⏸</span><span id="stopLabel">Stop</span></button>
+      <button class="ctrl" id="stopBtn"><span class="circle" id="stopIcon">▶</span><span id="stopLabel">Start</span></button>
       <button class="ctrl" id="quotesBtn"><span class="circle">📊</span>Quotes</button>
     </div>
 
-    <div class="active-card">
+    <div class="active-card" id="activeCard">
       <div class="glyph">PS</div>
       <div class="name" id="activeCardName">EDGE SCALPER — Pepperstone</div>
       <div class="check">✓</div>
     </div>
 
-    <div class="field" style="margin-top:10px;">
+    <div class="field">
       <label>Trading pair — tap to search all available symbols</label>
       <input type="text" id="pairSearch" placeholder="Currently: EURUSD — tap to search/change" autocomplete="off">
     </div>
     <div id="pairResults" style="max-height:160px; overflow-y:auto; display:none; background:var(--card); border-radius:12px; margin-top:-4px; margin-bottom:10px;"></div>
 
-    <button class="add-btn" id="settingsToggle" style="width:100%; background:var(--card); color:var(--text-dark); border:none; border-radius:12px; padding:10px; font-size:12px; font-weight:600; cursor:pointer; margin-bottom:10px;">⚙ Lot size / SL / TP / speed settings</button>
-    <div id="settingsPanel" style="display:none; background:var(--card); border-radius:12px; padding:12px; margin-bottom:10px;">
+    <div class="chart-wrap">
+      <div class="tf-row">
+        <button class="tf-btn" data-min="1">1m</button>
+        <button class="tf-btn active" data-min="5">5m</button>
+        <button class="tf-btn" data-min="15">15m</button>
+        <button class="tf-btn" data-min="30">30m</button>
+        <button class="tf-btn" data-min="60">1H</button>
+      </div>
+      <div id="chartContainer"></div>
+    </div>
+
+    <button class="add-btn" id="settingsToggle">⚙ Strategies / lot size / SL-TP / speed</button>
+    <div id="settingsPanel" style="display:none;">
+
+      <div class="toggle-row">
+        <label>Paper mode (simulate only, no real orders)</label>
+        <input type="checkbox" id="cfgPaper" style="width:auto;">
+      </div>
+
+      <div class="settings-section">Position sizing</div>
       <div class="field">
         <label>Fixed lot size (leave blank to auto-size by risk %)</label>
         <input type="number" id="cfgLotSize" step="0.01" placeholder="e.g. 0.01">
@@ -163,47 +206,81 @@
         <label>Risk % per trade (only used if lot size is blank)</label>
         <input type="number" id="cfgRisk" step="0.1" value="1">
       </div>
+
+      <div class="settings-section">Stop loss / take profit</div>
+      <div class="toggle-row">
+        <label>Use ATR-based stops (adapts to volatility)</label>
+        <input type="checkbox" id="cfgAtrEnabled" style="width:auto;">
+      </div>
       <div class="field">
-        <label>Stop loss (pips)</label>
+        <label>Fixed stop loss (pips) — used when ATR is off</label>
         <input type="number" id="cfgSL" step="0.5" value="5">
       </div>
       <div class="field">
-        <label>Take profit (pips)</label>
+        <label>Fixed take profit (pips) — used when ATR is off</label>
         <input type="number" id="cfgTP" step="0.5" value="8">
       </div>
       <div class="field">
-        <label>Candle speed (seconds per bar — lower = faster/more signals)</label>
+        <label>ATR period / SL multiplier / TP multiplier</label>
+        <input type="number" id="cfgAtrPeriod" step="1" value="14" style="margin-bottom:4px;">
+        <input type="number" id="cfgAtrSlMult" step="0.1" value="1.5" style="margin-bottom:4px;">
+        <input type="number" id="cfgAtrTpMult" step="0.1" value="2.5">
+      </div>
+
+      <div class="settings-section">Speed</div>
+      <div class="field">
+        <label>Candle speed (seconds per strategy bar)</label>
         <input type="number" id="cfgTf" step="1" value="15">
       </div>
       <div class="field">
         <label>Minimum seconds between trades</label>
         <input type="number" id="cfgCooldown" step="1" value="5">
       </div>
+
+      <div class="settings-section">Strategy 1 — EMA/RSI/Bollinger confluence</div>
+      <div class="toggle-row">
+        <label>Enabled</label>
+        <input type="checkbox" id="cfgConfluenceEnabled" style="width:auto;" checked>
+      </div>
       <div class="field">
-        <label>RSI period (lower = faster/more sensitive, e.g. 6)</label>
+        <label>RSI period</label>
         <input type="number" id="cfgRsiPeriod" step="1" value="6">
       </div>
       <div class="field">
-        <label>Confirmations required to fire (2 of 3 = faster, 3 of 3 = stricter)</label>
+        <label>Confirmations required (2 of 3 = faster, 3 of 3 = stricter)</label>
         <select id="cfgConfluence">
-          <option value="2">2 of 3 (EMA cross + RSI OR Bollinger)</option>
-          <option value="3">3 of 3 (EMA cross + RSI + Bollinger, all together)</option>
+          <option value="2">2 of 3</option>
+          <option value="3">3 of 3</option>
         </select>
       </div>
-      <div class="field">
-        <label><input type="checkbox" id="cfgRsiExtreme" style="width:auto;display:inline;margin-right:6px;">Also trade on RSI extreme reversal (independent of EMA/BB)</label>
+
+      <div class="settings-section">Strategy 2 — RSI extreme reversal</div>
+      <div class="toggle-row">
+        <label>Enabled</label>
+        <input type="checkbox" id="cfgRsiExtreme" style="width:auto;">
       </div>
       <div class="field">
-        <label>RSI oversold (buy) / overbought (sell) extreme levels</label>
+        <label>Oversold (buy) / Overbought (sell) levels</label>
         <input type="number" id="cfgRsiOversold" step="1" value="15" style="margin-bottom:4px;">
         <input type="number" id="cfgRsiOverbought" step="1" value="85">
       </div>
+
+      <div class="settings-section">Strategy 3 — structure break (swing high/low)</div>
+      <div class="toggle-row">
+        <label>Enabled</label>
+        <input type="checkbox" id="cfgStructure" style="width:auto;">
+      </div>
+      <div class="field">
+        <label>Lookback bars</label>
+        <input type="number" id="cfgStructureLookback" step="1" value="20">
+      </div>
+
       <button class="connect-btn" id="saveSettingsBtn" style="margin-top:4px;">Save settings</button>
     </div>
 
     <div class="metrics">
       <div class="metric"><div class="label">Account</div><div class="value" id="metAccount">—</div></div>
-      <div class="metric"><div class="label">Environment</div><div class="value" id="metEnv">—</div></div>
+      <div class="metric"><div class="label">Mode</div><div class="value" id="metEnv">—</div></div>
       <div class="metric"><div class="label">Balance</div><div class="value" id="metBalance">—</div></div>
       <div class="metric"><div class="label">Open trades</div><div class="value" id="metTrades">0</div></div>
     </div>
@@ -218,14 +295,21 @@
 /* =========================================================================
    PEPPERSTONE / cTRADER SCALPING BOT
    Connects directly to cTrader's Open API over WebSocket (JSON protocol,
-   port 5036) — the same free API Pepperstone accounts run on. No paid
-   bridge, no third-party server; every message goes straight to cTrader.
+   port 5036). Three independently-toggleable strategy modules, ATR or
+   fixed-pip stops, paper (simulated) or real order execution, in-app
+   Demo/Live switch, auto-reconnect, and a live candlestick chart.
 
-   BEFORE LIVE MONEY: run this on the Demo environment first. Two things
-   in particular need verifying against real cTrader responses before you
-   trust them: the account balance field, and the volume/lot scaling in
-   placeOrder() below — cTrader's volume convention can vary slightly by
-   account type, and getting it wrong risks sizing a real trade wrong.
+   HONEST LIMITS, not swept under the rug:
+   - Paper mode P&L is an approximation (assumes fills at last seen price,
+     no spread/slippage modeling) — good for testing signal behavior, not
+     a precise backtest.
+   - The chart and the strategy's own candle buffer are separate — the
+     chart shows real broker timeframes (1m/5m/15m/30m/1H); the strategy
+     evaluates on its own faster "candle speed" setting. That's by design,
+     but worth knowing they're not the same bars.
+   - Trend-bar history responses are matched by a simple "what am I
+     expecting right now" flag, not full per-request IDs — fine for normal
+     single-user use, not built for firing overlapping requests rapidly.
    ========================================================================= */
 
 const PT = {
@@ -237,41 +321,37 @@ const PT = {
   GET_ACCOUNTS_REQ:2149, GET_ACCOUNTS_RES:2150,
   GET_TRENDBARS_REQ:2137, GET_TRENDBARS_RES:2138, HEARTBEAT:51
 };
+const TF_PERIODS = { 1:'M1', 5:'M5', 15:'M15', 30:'M30', 60:'H1' };
+const PIP = { EURUSD:0.0001, GBPUSD:0.0001, USDJPY:0.01, XAUUSD:0.01 };
+const MAX_DAILY_LOSS_PERCENT = 5;
+const LOGIN_STORAGE_KEY = 'scalperbot_login_v2';
+const SETTINGS_STORAGE_KEY = 'scalperbot_settings_v2';
 
 const state = {
-  ws:null, msgSeq:0, hbTimer:null,
+  ws:null, msgSeq:0, hbTimer:null, manualDisconnect:false,
   clientId:null, clientSecret:null, accessToken:null, env:'demo',
   accountId:null, accountReady:false,
   balance:null, positions:[],
   symbol:'EURUSD', symbolId:null,
-  symbolsById:{}, symbolList:[],       // full list from the broker, for search
-  bars:[], currentBar:null, historyLoaded:false,
-  running:false, lastSignalAt:null, lastError:null,   // stays OFF until you tap Start
+  symbolsById:{}, symbolList:[],
+  bars:[], currentBar:null,
+  running:false, lastSignalAt:null, lastError:null,
   dayStartBalance:null, dayKey:null,
-  pendingTrendbarMsgId:null,
+  expecting:null, // 'strategy' | 'chart' — which pending GET_TRENDBARS_REQ we're waiting on
+  chartTimeframeMin:5, chartCurrentBar:null, chartSeries:null, chart:null,
+  paperBalance:null, paperPositions:[],
 };
 
-// User-adjustable trade settings (lot size / SL / TP / speed) — editable
-// from the dashboard's settings panel, saved to this device so you don't
-// have to re-enter them every time.
 const settings = {
-  fixedLotSize: null,   // if set, overrides risk-based sizing entirely
-  riskPercent: 1,
-  stopLossPips: 5,
-  takeProfitPips: 8,
-  timeframeSeconds: 15, // smaller = faster candles = more frequent signal checks
-  cooldownSeconds: 5,   // minimum gap between trades
-  rsiPeriod: 6,          // lower = more sensitive/faster RSI
-  confluenceRequired: 2, // 2 of 3 conditions (faster) vs 3 of 3 (stricter)
-  rsiExtremeEnabled: false, // additional trigger: trade on raw RSI extremes
-  rsiOversold: 15,
-  rsiOverbought: 85,
+  fixedLotSize:null, riskPercent:1,
+  stopLossPips:5, takeProfitPips:8,
+  atrEnabled:false, atrPeriod:14, atrSlMult:1.5, atrTpMult:2.5,
+  timeframeSeconds:15, cooldownSeconds:5,
+  rsiPeriod:6, confluenceRequired:2, confluenceEnabled:true,
+  rsiExtremeEnabled:false, rsiOversold:15, rsiOverbought:85,
+  structureEnabled:false, structureLookback:20,
+  paperMode:true,
 };
-
-const PIP = { EURUSD:0.0001, GBPUSD:0.0001, USDJPY:0.01, XAUUSD:0.01 };
-const MAX_DAILY_LOSS_PERCENT = 5;
-const LOGIN_STORAGE_KEY = 'scalperbot_login_v1';
-const SETTINGS_STORAGE_KEY = 'scalperbot_settings_v1';
 
 const $ = (id) => document.getElementById(id);
 function log(msg){
@@ -284,10 +364,6 @@ function log(msg){
 }
 
 // ---- saved login + settings (this device/browser only) ------------------
-// Credentials are stored in plain text in this browser's local storage so
-// you don't have to retype them each time. That's fine on your own phone,
-// but if this device is ever shared or lost, use "Forget saved login" and
-// revoke/regenerate the token at openapi.ctrader.com.
 function loadSavedLogin(){
   try {
     const raw = localStorage.getItem(LOGIN_STORAGE_KEY);
@@ -316,40 +392,57 @@ $('forgetLoginLink').addEventListener('click', (e) => {
 function loadSavedSettings(){
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if(!raw) return;
-    Object.assign(settings, JSON.parse(raw));
+    if(raw) Object.assign(settings, JSON.parse(raw));
   } catch(e) {}
+  $('cfgPaper').checked = settings.paperMode;
   $('cfgLotSize').value = settings.fixedLotSize ?? '';
   $('cfgRisk').value = settings.riskPercent;
+  $('cfgAtrEnabled').checked = settings.atrEnabled;
   $('cfgSL').value = settings.stopLossPips;
   $('cfgTP').value = settings.takeProfitPips;
+  $('cfgAtrPeriod').value = settings.atrPeriod;
+  $('cfgAtrSlMult').value = settings.atrSlMult;
+  $('cfgAtrTpMult').value = settings.atrTpMult;
   $('cfgTf').value = settings.timeframeSeconds;
   $('cfgCooldown').value = settings.cooldownSeconds;
+  $('cfgConfluenceEnabled').checked = settings.confluenceEnabled;
   $('cfgRsiPeriod').value = settings.rsiPeriod;
   $('cfgConfluence').value = String(settings.confluenceRequired);
   $('cfgRsiExtreme').checked = settings.rsiExtremeEnabled;
   $('cfgRsiOversold').value = settings.rsiOversold;
   $('cfgRsiOverbought').value = settings.rsiOverbought;
+  $('cfgStructure').checked = settings.structureEnabled;
+  $('cfgStructureLookback').value = settings.structureLookback;
+  $('ctPaper').checked = settings.paperMode;
 }
 function saveSettingsFromForm(){
+  settings.paperMode = $('cfgPaper').checked;
   const lot = parseFloat($('cfgLotSize').value);
   settings.fixedLotSize = isNaN(lot) || lot <= 0 ? null : lot;
   settings.riskPercent = parseFloat($('cfgRisk').value) || 1;
+  settings.atrEnabled = $('cfgAtrEnabled').checked;
   settings.stopLossPips = parseFloat($('cfgSL').value) || 5;
   settings.takeProfitPips = parseFloat($('cfgTP').value) || 8;
+  settings.atrPeriod = Math.max(2, parseInt($('cfgAtrPeriod').value, 10) || 14);
+  settings.atrSlMult = parseFloat($('cfgAtrSlMult').value) || 1.5;
+  settings.atrTpMult = parseFloat($('cfgAtrTpMult').value) || 2.5;
   settings.timeframeSeconds = Math.max(1, parseInt($('cfgTf').value, 10) || 15);
   settings.cooldownSeconds = Math.max(1, parseInt($('cfgCooldown').value, 10) || 5);
+  settings.confluenceEnabled = $('cfgConfluenceEnabled').checked;
   settings.rsiPeriod = Math.max(2, parseInt($('cfgRsiPeriod').value, 10) || 6);
   settings.confluenceRequired = parseInt($('cfgConfluence').value, 10) === 3 ? 3 : 2;
   settings.rsiExtremeEnabled = $('cfgRsiExtreme').checked;
   settings.rsiOversold = parseFloat($('cfgRsiOversold').value) || 15;
   settings.rsiOverbought = parseFloat($('cfgRsiOverbought').value) || 85;
+  settings.structureEnabled = $('cfgStructure').checked;
+  settings.structureLookback = Math.max(5, parseInt($('cfgStructureLookback').value, 10) || 20);
   localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-  log('Settings saved: ' + (settings.fixedLotSize ? settings.fixedLotSize + ' lots fixed' : settings.riskPercent + '% risk')
-    + ', SL ' + settings.stopLossPips + 'p, TP ' + settings.takeProfitPips + 'p, '
-    + settings.timeframeSeconds + 's candles, RSI(' + settings.rsiPeriod + '), '
-    + settings.confluenceRequired + '-of-3 confirmations'
-    + (settings.rsiExtremeEnabled ? ', + RSI extreme (' + settings.rsiOversold + '/' + settings.rsiOverbought + ')' : '') + '.');
+  log('Settings saved. Paper mode: ' + (settings.paperMode ? 'ON' : 'OFF')
+    + ' | Confluence:' + (settings.confluenceEnabled?'on':'off')
+    + ' RSI-extreme:' + (settings.rsiExtremeEnabled?'on':'off')
+    + ' Structure:' + (settings.structureEnabled?'on':'off')
+    + ' | Stops: ' + (settings.atrEnabled ? 'ATR('+settings.atrPeriod+') x'+settings.atrSlMult+'/'+settings.atrTpMult : settings.stopLossPips+'p/'+settings.takeProfitPips+'p'));
+  updateActiveCardLabel();
   $('settingsPanel').style.display = 'none';
 }
 $('settingsToggle').addEventListener('click', () => {
@@ -361,6 +454,11 @@ $('saveSettingsBtn').addEventListener('click', saveSettingsFromForm);
 loadSavedLogin();
 loadSavedSettings();
 
+function updateActiveCardLabel(){
+  $('activeCard').classList.toggle('paper', settings.paperMode);
+  $('activeCardName').textContent = 'EDGE SCALPER — Pepperstone' + (settings.paperMode ? ' (Paper)' : '');
+}
+
 // ---- connection -----------------------------------------------------
 function send(payloadType, payload){
   if(!state.ws || state.ws.readyState !== 1) return;
@@ -368,21 +466,12 @@ function send(payloadType, payload){
   state.ws.send(JSON.stringify({ clientMsgId:id, payloadType, payload }));
 }
 
-function connect(){
-  state.clientId = $('ctId').value.trim();
-  state.clientSecret = $('ctSec').value.trim();
-  state.accessToken = $('ctTok').value.trim();
-  state.env = $('ctEnv').value;
-  state.symbol = 'EURUSD'; // default pair on connect — change it from the dashboard's pair search after
-  $('errorLine').textContent = '';
-
-  if(!state.clientId || !state.clientSecret || !state.accessToken){
-    $('errorLine').textContent = 'Client ID, Client Secret, and Access Token are all required.';
-    return;
-  }
-
-  const btn = $('connectBtn');
-  btn.disabled = true; btn.textContent = 'Connecting…';
+function connectWithCreds(creds){
+  state.clientId = creds.clientId;
+  state.clientSecret = creds.clientSecret;
+  state.accessToken = creds.accessToken;
+  state.env = creds.env;
+  state.manualDisconnect = false;
 
   const host = state.env === 'live'
     ? 'wss://live.ctraderapi.com:5036'
@@ -392,32 +481,56 @@ function connect(){
   state.ws = ws;
 
   ws.onopen = () => {
-    log('Socket open. Authorizing application…');
+    log('Socket open (' + state.env + '). Authorizing application…');
     send(PT.APP_AUTH_REQ, { clientId: state.clientId, clientSecret: state.clientSecret });
+    if(state.hbTimer) clearInterval(state.hbTimer);
     state.hbTimer = setInterval(() => send(PT.HEARTBEAT, {}), 20000);
   };
 
   ws.onmessage = (ev) => {
-    let m;
-    try { m = JSON.parse(ev.data); } catch(e) { return; }
+    let m; try { m = JSON.parse(ev.data); } catch(e) { return; }
     handleMessage(m);
   };
 
   ws.onclose = () => {
     clearInterval(state.hbTimer);
-    if(!state.accountReady){
-      btn.disabled = false; btn.textContent = 'Connect account';
-      $('errorLine').textContent = 'Connection closed before finishing — check your credentials and try again.';
-    } else {
-      log('Connection dropped — reconnecting in 2s…');
-      setTimeout(connect, 2000);
-    }
+    if(state.manualDisconnect) return;
+    log('Connection dropped — reconnecting in 3s…');
+    setTimeout(() => {
+      if(state.clientId) connectWithCreds({ clientId: state.clientId, clientSecret: state.clientSecret, accessToken: state.accessToken, env: state.env });
+    }, 3000);
   };
 
-  ws.onerror = () => {
-    log('WebSocket error.');
-  };
+  ws.onerror = () => log('WebSocket error.');
 }
+
+function connect(){
+  const clientId = $('ctId').value.trim();
+  const clientSecret = $('ctSec').value.trim();
+  const accessToken = $('ctTok').value.trim();
+  const env = $('ctEnv').value;
+  settings.paperMode = $('ctPaper').checked;
+  $('errorLine').textContent = '';
+
+  if(!clientId || !clientSecret || !accessToken){
+    $('errorLine').textContent = 'Client ID, Client Secret, and Access Token are all required.';
+    return;
+  }
+  const btn = $('connectBtn');
+  btn.disabled = true; btn.textContent = 'Connecting…';
+  state._connectBtnReset = () => { btn.disabled = false; btn.textContent = 'Connect account'; };
+  connectWithCreds({ clientId, clientSecret, accessToken, env });
+}
+$('connectBtn').addEventListener('click', connect);
+
+// Reconnect automatically if the tab comes back to the foreground and the
+// socket isn't open (covers phones that suspend background tabs/browsers).
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible' && state.clientId && (!state.ws || state.ws.readyState !== 1)){
+    log('Tab back in focus — checking connection…');
+    connectWithCreds({ clientId: state.clientId, clientSecret: state.clientSecret, accessToken: state.accessToken, env: state.env });
+  }
+});
 
 function handleMessage(m){
   const pt = m.payloadType, p = m.payload || {};
@@ -431,7 +544,7 @@ function handleMessage(m){
       const accs = p.ctidTraderAccount || [];
       const wantLive = state.env === 'live';
       const acc = accs.find(a => !!a.isLive === wantLive) || accs[0];
-      if(!acc){ log('No trading account found on this token.'); return; }
+      if(!acc){ log('No trading account found on this token for ' + state.env + '.'); if(state._connectBtnReset) state._connectBtnReset(); return; }
       state.accountId = acc.ctidTraderAccountId;
       log('Found account ' + state.accountId + '. Authorizing…');
       send(PT.ACC_AUTH_REQ, { ctidTraderAccountId: state.accountId, accessToken: state.accessToken });
@@ -449,9 +562,8 @@ function handleMessage(m){
       break;
 
     case PT.TRADER_RES:
-      // NOTE: verify this field against your real account on demo first —
-      // cTrader typically returns balance in the account's smallest unit.
       state.balance = p.trader && p.trader.balance != null ? p.trader.balance / 100 : null;
+      if(state.paperBalance == null && state.balance != null) state.paperBalance = state.balance;
       updateDashboard();
       break;
 
@@ -460,25 +572,17 @@ function handleMessage(m){
       state.symbolList = list;
       list.forEach(s => { state.symbolsById[s.symbolId] = s; });
       const match = list.find(s => (s.symbolName || '').replace('/', '').toUpperCase() === state.symbol);
-      if(match){
-        switchSymbol(match.symbolId, match.symbolName);
-      } else if(list.length){
-        // Fall back to whatever the broker returns first, rather than
-        // silently subscribing to nothing.
-        switchSymbol(list[0].symbolId, list[0].symbolName);
-      } else {
-        log('This account returned no tradable symbols at all.');
-      }
+      if(match) switchSymbol(match.symbolId, match.symbolName);
+      else if(list.length) switchSymbol(list[0].symbolId, list[0].symbolName);
+      else log('This account returned no tradable symbols at all.');
       break;
     }
 
     case PT.GET_TRENDBARS_RES: {
-      // Match by symbol rather than message id — more robust than assuming
-      // the API echoes clientMsgId back on this response type.
       if(p.symbolId != null && p.symbolId !== state.symbolId) break;
       const raw = p.trendbar || [];
-      if(!raw.length){ log('No history returned for this symbol yet.'); break; }
-      state.bars = raw.map(tb => {
+      if(!raw.length){ log('No history returned yet.'); break; }
+      const candles = raw.map(tb => {
         const low = (tb.low || 0) / 1e5;
         return {
           t: tb.utcTimestampInMinutes * 60000,
@@ -487,9 +591,18 @@ function handleMessage(m){
           l: low,
           c: low + (tb.deltaClose != null ? tb.deltaClose : (tb.deltaOpen || 0)) / 1e5,
         };
-      }).sort((a,b) => a.t - b.t).slice(-200);
-      state.historyLoaded = true;
-      log('Loaded ' + state.bars.length + ' minutes of history for ' + state.symbol + '.');
+      }).sort((a,b) => a.t - b.t);
+
+      if(state.expecting === 'chart'){
+        if(state.chartSeries){
+          state.chartSeries.setData(candles.map(c => ({ time: Math.floor(c.t/1000), open:c.o, high:c.h, low:c.l, close:c.c })));
+        }
+        log('Chart loaded (' + state.chartTimeframeMin + 'm, ' + candles.length + ' bars).');
+      } else {
+        state.bars = candles.slice(-200);
+        log('Loaded ' + state.bars.length + ' minutes of strategy history for ' + state.symbol + '.');
+      }
+      state.expecting = null;
       updateDashboard();
       break;
     }
@@ -531,20 +644,17 @@ function switchSymbol(symbolId, symbolName){
   state.symbol = (symbolName || '').replace('/', '').toUpperCase();
   state.bars = [];
   state.currentBar = null;
-  state.historyLoaded = false;
 
   send(PT.SUBSCRIBE_SPOTS_REQ, { ctidTraderAccountId: state.accountId, symbolId: [symbolId] });
   log('Subscribed to ' + state.symbol + '.');
 
-  const msgId = 'hist' + (state.msgSeq++);
-  state.pendingTrendbarMsgId = msgId;
+  state.expecting = 'strategy';
   send(PT.GET_TRENDBARS_REQ, {
-    ctidTraderAccountId: state.accountId,
-    symbolId: symbolId,
-    period: 'M1',
-    fromTimestamp: Date.now() - 200*60000,
-    toTimestamp: Date.now(),
+    ctidTraderAccountId: state.accountId, symbolId, period:'M1',
+    fromTimestamp: Date.now() - 200*60000, toTimestamp: Date.now(),
   });
+
+  loadChartHistory();
 
   $('pairSearch').value = '';
   $('pairSearch').placeholder = 'Currently: ' + state.symbol + ' — tap to search/change';
@@ -555,29 +665,70 @@ function switchSymbol(symbolId, symbolName){
 function renderPairResults(filterText){
   const box = $('pairResults');
   const q = filterText.trim().toUpperCase();
-  const matches = state.symbolList
-    .filter(s => !q || (s.symbolName || '').toUpperCase().includes(q))
-    .slice(0, 40);
-
+  const matches = state.symbolList.filter(s => !q || (s.symbolName || '').toUpperCase().includes(q)).slice(0, 40);
   if(!matches.length){
     box.innerHTML = '<div class="pair-row" style="color:var(--text-mid);">No matches</div>';
   } else {
-    box.innerHTML = matches.map(s =>
-      '<div class="pair-row" data-id="' + s.symbolId + '" data-name="' + s.symbolName + '">' + s.symbolName + '</div>'
-    ).join('');
+    box.innerHTML = matches.map(s => '<div class="pair-row" data-id="' + s.symbolId + '" data-name="' + s.symbolName + '">' + s.symbolName + '</div>').join('');
     box.querySelectorAll('.pair-row[data-id]').forEach(el => {
-      el.addEventListener('click', () => {
-        switchSymbol(parseInt(el.dataset.id, 10), el.dataset.name);
-      });
+      el.addEventListener('click', () => switchSymbol(parseInt(el.dataset.id, 10), el.dataset.name));
     });
   }
   box.style.display = 'block';
 }
-
 $('pairSearch').addEventListener('focus', () => renderPairResults(''));
 $('pairSearch').addEventListener('input', (e) => renderPairResults(e.target.value));
 
-// ---- price stream -> candles -> strategy ------------------------------
+// ---- chart --------------------------------------------------------------
+function initChart(){
+  if(state.chart || typeof LightweightCharts === 'undefined') return;
+  state.chart = LightweightCharts.createChart($('chartContainer'), {
+    layout:{ background:{color:'#f5f6f8'}, textColor:'#1c1f26', fontSize:10 },
+    grid:{ vertLines:{color:'#e2e5ea'}, horzLines:{color:'#e2e5ea'} },
+    timeScale:{ timeVisible:true, secondsVisible:false },
+    height:160,
+  });
+  state.chartSeries = state.chart.addCandlestickSeries({
+    upColor:'#16a34a', downColor:'#dc2626', borderVisible:false,
+    wickUpColor:'#16a34a', wickDownColor:'#dc2626',
+  });
+}
+function loadChartHistory(){
+  if(state.symbolId == null) return;
+  initChart();
+  state.expecting = 'chart';
+  send(PT.GET_TRENDBARS_REQ, {
+    ctidTraderAccountId: state.accountId, symbolId: state.symbolId,
+    period: TF_PERIODS[state.chartTimeframeMin] || 'M5',
+    fromTimestamp: Date.now() - state.chartTimeframeMin*60000*200,
+    toTimestamp: Date.now(),
+  });
+}
+document.querySelectorAll('.tf-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.chartTimeframeMin = parseInt(btn.dataset.min, 10);
+    state.chartCurrentBar = null;
+    loadChartHistory();
+  });
+});
+function updateChartLiveTick(price){
+  if(!state.chartSeries) return;
+  const tfMs = state.chartTimeframeMin * 60000;
+  const bucket = Math.floor(Date.now()/tfMs) * tfMs;
+  const timeSec = Math.floor(bucket/1000);
+  if(!state.chartCurrentBar || state.chartCurrentBar.time !== timeSec){
+    state.chartCurrentBar = { time:timeSec, open:price, high:price, low:price, close:price };
+  } else {
+    state.chartCurrentBar.high = Math.max(state.chartCurrentBar.high, price);
+    state.chartCurrentBar.low = Math.min(state.chartCurrentBar.low, price);
+    state.chartCurrentBar.close = price;
+  }
+  state.chartSeries.update(state.chartCurrentBar);
+}
+
+// ---- price stream -> candles -> strategies ------------------------------
 function onSpot(p){
   if(p.symbolId !== state.symbolId) return;
   const bid = p.bid ? p.bid / 1e5 : null;
@@ -588,16 +739,14 @@ function onSpot(p){
   const mid = ((state.bid || 0) + (state.ask || 0)) / 2 || state.bid || state.ask;
 
   pushToBars(mid);
+  updateChartLiveTick(mid);
+  checkPaperPositions();
 
-  // Evaluate against the closed bars PLUS the still-forming candle, so the
-  // bot reacts to the live price immediately instead of waiting for the
-  // current candle to finish — that wait was the "taking too long" delay.
-  const evalBars = state.currentBar ? state.bars.concat([{
-    t: state.currentBar.t, o: state.currentBar.o, h: state.currentBar.h,
-    l: state.currentBar.l, c: state.currentBar.c
-  }]) : state.bars;
+  const evalBars = state.currentBar ? state.bars.concat([{ t:state.currentBar.t, o:state.currentBar.o, h:state.currentBar.h, l:state.currentBar.l, c:state.currentBar.c }]) : state.bars;
 
-  const signal = generateSignal(evalBars) || generateRsiExtremeSignal(evalBars);
+  const signal = (settings.confluenceEnabled && generateSignal(evalBars))
+    || (settings.rsiExtremeEnabled && generateRsiExtremeSignal(evalBars))
+    || (settings.structureEnabled && generateStructureSignal(evalBars));
   if(signal) maybeTrade(signal);
 }
 
@@ -605,10 +754,7 @@ function pushToBars(price){
   const tfMs = settings.timeframeSeconds * 1000;
   const now = Math.floor(Date.now() / tfMs) * tfMs;
   if(!state.currentBar || state.currentBar.t !== now){
-    if(state.currentBar) {
-      state.bars.push(state.currentBar);
-      if(state.bars.length > 200) state.bars.shift();
-    }
+    if(state.currentBar){ state.bars.push(state.currentBar); if(state.bars.length > 200) state.bars.shift(); }
     state.currentBar = { t: now, o: price, h: price, l: price, c: price };
   } else {
     state.currentBar.h = Math.max(state.currentBar.h, price);
@@ -617,32 +763,23 @@ function pushToBars(price){
   }
 }
 
-// Small inline indicator implementations (no external libraries in the browser).
 function ema(values, period){
-  const k = 2 / (period + 1);
-  const out = [];
-  values.forEach((v, i) => {
-    out.push(i === 0 ? v : v * k + out[i-1] * (1-k));
-  });
+  const k = 2/(period+1); const out = [];
+  values.forEach((v,i) => out.push(i===0 ? v : v*k + out[i-1]*(1-k)));
   return out;
 }
 function rsi(values, period){
   const out = new Array(values.length).fill(null);
-  let gains = 0, losses = 0;
+  let gains=0, losses=0;
   for(let i=1;i<values.length;i++){
     const diff = values[i]-values[i-1];
     const gain = Math.max(diff,0), loss = Math.max(-diff,0);
-    if(i <= period){
-      gains += gain; losses += loss;
-      if(i === period){
-        const rs = losses === 0 ? 100 : gains/losses;
-        out[i] = 100 - (100/(1+rs));
-      }
+    if(i<=period){
+      gains+=gain; losses+=loss;
+      if(i===period){ const rs = losses===0?100:gains/losses; out[i]=100-(100/(1+rs)); }
     } else {
-      gains = (gains*(period-1)+gain)/period;
-      losses = (losses*(period-1)+loss)/period;
-      const rs = losses === 0 ? 100 : gains/losses;
-      out[i] = 100 - (100/(1+rs));
+      gains=(gains*(period-1)+gain)/period; losses=(losses*(period-1)+loss)/period;
+      const rs = losses===0?100:gains/losses; out[i]=100-(100/(1+rs));
     }
   }
   return out;
@@ -658,6 +795,20 @@ function bollinger(values, period, mult){
   }
   return out;
 }
+function trueRange(bars, i){
+  if(i===0) return bars[i].h - bars[i].l;
+  return Math.max(bars[i].h-bars[i].l, Math.abs(bars[i].h-bars[i-1].c), Math.abs(bars[i].l-bars[i-1].c));
+}
+function computeATR(bars, period){
+  if(bars.length < period+1) return null;
+  let sum=0;
+  for(let i=1;i<=period;i++) sum += trueRange(bars,i);
+  let atrVal = sum/period;
+  for(let i=period+1;i<bars.length;i++){
+    atrVal = (atrVal*(period-1) + trueRange(bars,i)) / period;
+  }
+  return atrVal;
+}
 
 let lastEvalLog = 0;
 function generateSignal(bars){
@@ -667,69 +818,83 @@ function generateSignal(bars){
   const ema21 = ema(closes, 21);
   const rsiVals = rsi(closes, settings.rsiPeriod);
   const bb = bollinger(closes, 20, 2);
-
   const i = closes.length - 1;
   const bbLast = bb[i];
   if(!bbLast || rsiVals[i] == null) return null;
 
   const crossedUp = ema9[i-1] <= ema21[i-1] && ema9[i] > ema21[i];
   const crossedDown = ema9[i-1] >= ema21[i-1] && ema9[i] < ema21[i];
-  const rsiBull = rsiVals[i] > 50;
-  const rsiBear = rsiVals[i] < 50;
-  const bbLow = closes[i] <= bbLast.lower;
-  const bbHigh = closes[i] >= bbLast.upper;
+  const rsiBull = rsiVals[i] > 50, rsiBear = rsiVals[i] < 50;
+  const bbLow = closes[i] <= bbLast.lower, bbHigh = closes[i] >= bbLast.upper;
+  const bullScore = (crossedUp?1:0)+(rsiBull?1:0)+(bbLow?1:0);
+  const bearScore = (crossedDown?1:0)+(rsiBear?1:0)+(bbHigh?1:0);
+  const need = settings.confluenceRequired;
 
-  const bullScore = (crossedUp?1:0) + (rsiBull?1:0) + (bbLow?1:0);
-  const bearScore = (crossedDown?1:0) + (rsiBear?1:0) + (bbHigh?1:0);
-  const need = settings.confluenceRequired; // 2-of-3 (faster) or 3-of-3 (stricter)
-
-  // Throttled visibility into what the engine is actually seeing, so the
-  // dashboard doesn't look frozen during quiet stretches.
   if(Date.now() - lastEvalLog > 8000){
     lastEvalLog = Date.now();
-    log('RSI(' + settings.rsiPeriod + ') ' + rsiVals[i].toFixed(1)
-      + ' | EMA9 ' + (ema9[i]>ema21[i]?'>':'<') + ' EMA21'
-      + ' | BB ' + (bbLow?'@lower':bbHigh?'@upper':'mid')
-      + ' | bull ' + bullScore + '/3, bear ' + bearScore + '/3 (need ' + need + ')');
+    log('[Confluence] RSI('+settings.rsiPeriod+') '+rsiVals[i].toFixed(1)+' | EMA9 '+(ema9[i]>ema21[i]?'>':'<')+' EMA21 | BB '+(bbLow?'@lower':bbHigh?'@upper':'mid')+' | bull '+bullScore+'/3, bear '+bearScore+'/3 (need '+need+')');
   }
-
   if(bullScore >= need && crossedUp) return 'buy';
   if(bearScore >= need && crossedDown) return 'sell';
   return null;
 }
 
-// Second, independent trigger: fires purely on RSI hitting a real extreme
-// (like the standalone alert script), no EMA/BB confirmation required.
-// Same order execution, risk sizing, and cooldown apply either way.
 function generateRsiExtremeSignal(bars){
-  if(!settings.rsiExtremeEnabled) return null;
   if(bars.length < settings.rsiPeriod + 2) return null;
   const closes = bars.map(b => b.c);
   const rsiVals = rsi(closes, settings.rsiPeriod);
   const i = closes.length - 1;
   if(rsiVals[i] == null) return null;
-
-  if(rsiVals[i] <= settings.rsiOversold){ log('RSI extreme oversold (' + rsiVals[i].toFixed(1) + ') — buy trigger.'); return 'buy'; }
-  if(rsiVals[i] >= settings.rsiOverbought){ log('RSI extreme overbought (' + rsiVals[i].toFixed(1) + ') — sell trigger.'); return 'sell'; }
+  if(rsiVals[i] <= settings.rsiOversold){ log('[RSI-extreme] oversold ('+rsiVals[i].toFixed(1)+') — buy trigger.'); return 'buy'; }
+  if(rsiVals[i] >= settings.rsiOverbought){ log('[RSI-extreme] overbought ('+rsiVals[i].toFixed(1)+') — sell trigger.'); return 'sell'; }
   return null;
 }
 
-// ---- risk + order placement --------------------------------------------
-function dailyLossHalted(){
-  const today = new Date().toISOString().slice(0,10);
-  if(state.dayKey !== today){
-    state.dayKey = today;
-    state.dayStartBalance = state.balance;
+function generateStructureSignal(bars){
+  const lb = settings.structureLookback;
+  if(bars.length < lb + 2) return null;
+  const window = bars.slice(-lb-1, -1); // excludes the just-formed bar
+  const recentHigh = Math.max(...window.map(b=>b.h));
+  const recentLow = Math.min(...window.map(b=>b.l));
+  const lastClose = bars[bars.length-1].c;
+  if(lastClose > recentHigh){ log('[Structure] broke above '+recentHigh.toFixed(5)+' — buy trigger.'); return 'buy'; }
+  if(lastClose < recentLow){ log('[Structure] broke below '+recentLow.toFixed(5)+' — sell trigger.'); return 'sell'; }
+  return null;
+}
+
+// ---- stop distances (ATR or fixed pips) ---------------------------------
+function getStopDistances(){
+  const pip = PIP[state.symbol] || 0.0001;
+  if(settings.atrEnabled){
+    const atrVal = computeATR(state.bars, settings.atrPeriod);
+    if(atrVal){
+      return {
+        slPrice: atrVal * settings.atrSlMult,
+        tpPrice: atrVal * settings.atrTpMult,
+        slPipsEquivalent: (atrVal * settings.atrSlMult) / pip,
+      };
+    }
   }
-  if(state.dayStartBalance == null || state.balance == null) return false;
-  const lossPercent = ((state.dayStartBalance - state.balance) / state.dayStartBalance) * 100;
-  return lossPercent >= MAX_DAILY_LOSS_PERCENT;
+  return {
+    slPrice: settings.stopLossPips * pip,
+    tpPrice: settings.takeProfitPips * pip,
+    slPipsEquivalent: settings.stopLossPips,
+  };
+}
+
+// ---- risk + order placement (real or paper) ------------------------------
+function dailyLossHalted(bal){
+  const today = new Date().toISOString().slice(0,10);
+  if(state.dayKey !== today){ state.dayKey = today; state.dayStartBalance = bal; }
+  if(state.dayStartBalance == null || bal == null) return false;
+  return ((state.dayStartBalance - bal) / state.dayStartBalance) * 100 >= MAX_DAILY_LOSS_PERCENT;
 }
 
 function maybeTrade(signal){
   if(!state.running) return;
-  if(!state.accountReady || state.balance == null) return;
-  if(dailyLossHalted()){
+  const bal = settings.paperMode ? state.paperBalance : state.balance;
+  if(bal == null) return;
+  if(dailyLossHalted(bal)){
     state.running = false;
     state.lastError = 'Daily loss limit reached — bot auto-stopped.';
     updateDashboard();
@@ -737,83 +902,113 @@ function maybeTrade(signal){
   }
   if(state.lastSignalAt && Date.now() - state.lastSignalAt < settings.cooldownSeconds * 1000) return;
 
-  placeOrder(signal);
+  if(settings.paperMode) openPaperTrade(signal);
+  else placeOrder(signal);
   state.lastSignalAt = Date.now();
 }
 
+function computeLots(bal, slPipsEquivalent){
+  if(settings.fixedLotSize) return settings.fixedLotSize;
+  const riskAmount = bal * (settings.riskPercent / 100);
+  const pipValuePerLot = 10; // approx for major FX at 1.0 lot — verify per symbol on demo
+  const rawLots = riskAmount / (slPipsEquivalent * pipValuePerLot);
+  return Math.max(0.01, Math.min(Math.floor(rawLots*100)/100, 5));
+}
+
 function placeOrder(signal){
-  const pip = PIP[state.symbol] || 0.0001;
-
-  let lots;
-  if(settings.fixedLotSize){
-    lots = settings.fixedLotSize;
-  } else {
-    const riskAmount = state.balance * (settings.riskPercent / 100);
-    // Volume scaling: cTrader's NEW_ORDER_REQ volume field is generally
-    // expressed in hundredths of a unit of the base currency (so 1.00 standard
-    // lot = 100000 units = volume 10000000). VERIFY this against a real demo
-    // fill before trusting it on a live account — brokers occasionally differ.
-    const pipValuePerLot = 10; // approx for major FX pairs at 1.0 lot — verify per symbol
-    const rawLots = riskAmount / (settings.stopLossPips * pipValuePerLot);
-    lots = Math.max(0.01, Math.min(Math.floor(rawLots*100)/100, 5));
-  }
+  const { slPrice, tpPrice, slPipsEquivalent } = getStopDistances();
+  const lots = computeLots(state.balance, slPipsEquivalent);
   const volume = Math.round(lots * 100000 * 100);
-
-  const relSL = Math.round(settings.stopLossPips * pip * 100000);
-  const relTP = Math.round(settings.takeProfitPips * pip * 100000);
+  const relSL = Math.round(slPrice * 100000);
+  const relTP = Math.round(tpPrice * 100000);
 
   send(PT.NEW_ORDER_REQ, {
-    ctidTraderAccountId: state.accountId,
-    symbolId: state.symbolId,
-    orderType: 1, // market
-    tradeSide: signal === 'buy' ? 1 : 2,
-    volume,
-    relativeStopLoss: relSL,
-    relativeTakeProfit: relTP,
-    label: 'scalper-bot'
+    ctidTraderAccountId: state.accountId, symbolId: state.symbolId,
+    orderType: 1, tradeSide: signal === 'buy' ? 1 : 2, volume,
+    relativeStopLoss: relSL, relativeTakeProfit: relTP, label: 'scalper-bot'
   });
-
-  log((signal === 'buy' ? 'BUY' : 'SELL') + ' ' + lots + ' lots ' + state.symbol);
+  log((signal==='buy'?'BUY':'SELL')+' '+lots+' lots '+state.symbol+' (real order)');
 }
+
+function openPaperTrade(signal){
+  const { slPrice, tpPrice, slPipsEquivalent } = getStopDistances();
+  const lots = computeLots(state.paperBalance, slPipsEquivalent);
+  const entry = signal === 'buy' ? state.ask : state.bid;
+  if(!entry) return;
+  const pos = {
+    id: 'p'+Date.now(), side: signal, entry, lots,
+    sl: signal==='buy' ? entry - slPrice : entry + slPrice,
+    tp: signal==='buy' ? entry + tpPrice : entry - tpPrice,
+  };
+  state.paperPositions.push(pos);
+  log((signal==='buy'?'BUY':'SELL')+' '+lots+' lots '+state.symbol+' @ '+entry.toFixed(5)+' (PAPER)');
+}
+
+function checkPaperPositions(){
+  if(!state.paperPositions.length) return;
+  const pip = PIP[state.symbol] || 0.0001;
+  const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
+  if(!price) return;
+  state.paperPositions = state.paperPositions.filter(pos => {
+    const hitTp = pos.side==='buy' ? price >= pos.tp : price <= pos.tp;
+    const hitSl = pos.side==='buy' ? price <= pos.sl : price >= pos.sl;
+    if(!hitTp && !hitSl) return true;
+    const exit = hitTp ? pos.tp : pos.sl;
+    const pips = pos.side==='buy' ? (exit-pos.entry)/pip : (pos.entry-exit)/pip;
+    const pnl = pips * 10 * pos.lots; // approx pip value — paper mode estimate, not exact
+    state.paperBalance += pnl;
+    log((hitTp?'TP hit':'SL hit')+' on '+pos.side+' '+state.symbol+' — paper P&L '+(pnl>=0?'+':'')+pnl.toFixed(2));
+    return false;
+  });
+  updateDashboard();
+}
+
+// ---- env switch -----------------------------------------------------------
+function switchEnv(newEnv){
+  if(newEnv === state.env) return;
+  if(newEnv === 'live' && !confirm('Switch to LIVE? Real orders will be placed on your real account (unless Paper mode is on). Continue?')) return;
+  state.manualDisconnect = true;
+  if(state.ws) state.ws.close();
+  state.accountReady = false; state.symbolId = null; state.bars = []; state.currentBar = null;
+  log('Switching to ' + newEnv + '…');
+  connectWithCreds({ clientId: state.clientId, clientSecret: state.clientSecret, accessToken: state.accessToken, env: newEnv });
+}
+$('envDemoBtn').addEventListener('click', () => switchEnv('demo'));
+$('envLiveBtn').addEventListener('click', () => switchEnv('live'));
 
 // ---- UI ------------------------------------------------------------------
 function onConnected(){
   document.getElementById('loginScreen').classList.remove('active');
   document.getElementById('dashScreen').classList.add('active');
+  updateActiveCardLabel();
   updateDashboard();
 }
-
 function updateDashboard(){
   $('metAccount').textContent = state.accountId || '—';
-  $('metEnv').textContent = state.env;
-  $('metBalance').textContent = state.balance != null ? state.balance.toFixed(2) : '—';
-  $('metTrades').textContent = state.positions.length;
+  $('metEnv').textContent = state.env + (settings.paperMode ? ' (paper)' : '');
+  const bal = settings.paperMode ? state.paperBalance : state.balance;
+  $('metBalance').textContent = bal != null ? bal.toFixed(2) : '—';
+  $('metTrades').textContent = settings.paperMode ? state.paperPositions.length : state.positions.length;
   $('stopIcon').textContent = state.running ? '⏸' : '▶';
   $('stopLabel').textContent = state.running ? 'Stop' : 'Start';
   $('engineStatus').innerHTML = 'Signal engine: ' +
-    (state.running
-      ? '<span class="live">live — watching ' + state.symbol + '</span>'
-      : '<span class="halted">stopped' + (state.lastError ? ' — ' + state.lastError : '') + '</span>');
+    (state.running ? '<span class="live">live — watching ' + state.symbol + '</span>'
+                   : '<span class="halted">stopped' + (state.lastError ? ' — ' + state.lastError : '') + '</span>');
+  $('envDemoBtn').classList.toggle('active', state.env==='demo');
+  $('envLiveBtn').classList.toggle('active', false);
+  $('envLiveBtn').classList.toggle('live-active', state.env==='live');
 }
 setInterval(updateDashboard, 3000);
 
-$('connectBtn').addEventListener('click', connect);
-
-$('stopBtn').addEventListener('click', () => {
-  state.running = !state.running;
-  updateDashboard();
-});
-
+$('stopBtn').addEventListener('click', () => { state.running = !state.running; updateDashboard(); });
 $('removeBtn').addEventListener('click', () => {
   if(!confirm('Disconnect and remove the bot?')) return;
+  state.manualDisconnect = true;
   if(state.ws) state.ws.close();
   location.reload();
 });
-
 $('quotesBtn').addEventListener('click', () => {
-  alert(state.bid && state.ask
-    ? state.symbol + '  bid: ' + state.bid + '  ask: ' + state.ask
-    : 'No live price yet.');
+  alert(state.bid && state.ask ? state.symbol+'  bid: '+state.bid+'  ask: '+state.ask : 'No live price yet.');
 });
 </script>
 
