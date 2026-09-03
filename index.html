@@ -190,6 +190,14 @@
           <option value="3">3 of 3 (EMA cross + RSI + Bollinger, all together)</option>
         </select>
       </div>
+      <div class="field">
+        <label><input type="checkbox" id="cfgRsiExtreme" style="width:auto;display:inline;margin-right:6px;">Also trade on RSI extreme reversal (independent of EMA/BB)</label>
+      </div>
+      <div class="field">
+        <label>RSI oversold (buy) / overbought (sell) extreme levels</label>
+        <input type="number" id="cfgRsiOversold" step="1" value="15" style="margin-bottom:4px;">
+        <input type="number" id="cfgRsiOverbought" step="1" value="85">
+      </div>
       <button class="connect-btn" id="saveSettingsBtn" style="margin-top:4px;">Save settings</button>
     </div>
 
@@ -255,6 +263,9 @@ const settings = {
   cooldownSeconds: 5,   // minimum gap between trades
   rsiPeriod: 6,          // lower = more sensitive/faster RSI
   confluenceRequired: 2, // 2 of 3 conditions (faster) vs 3 of 3 (stricter)
+  rsiExtremeEnabled: false, // additional trigger: trade on raw RSI extremes
+  rsiOversold: 15,
+  rsiOverbought: 85,
 };
 
 const PIP = { EURUSD:0.0001, GBPUSD:0.0001, USDJPY:0.01, XAUUSD:0.01 };
@@ -316,6 +327,9 @@ function loadSavedSettings(){
   $('cfgCooldown').value = settings.cooldownSeconds;
   $('cfgRsiPeriod').value = settings.rsiPeriod;
   $('cfgConfluence').value = String(settings.confluenceRequired);
+  $('cfgRsiExtreme').checked = settings.rsiExtremeEnabled;
+  $('cfgRsiOversold').value = settings.rsiOversold;
+  $('cfgRsiOverbought').value = settings.rsiOverbought;
 }
 function saveSettingsFromForm(){
   const lot = parseFloat($('cfgLotSize').value);
@@ -327,11 +341,15 @@ function saveSettingsFromForm(){
   settings.cooldownSeconds = Math.max(1, parseInt($('cfgCooldown').value, 10) || 5);
   settings.rsiPeriod = Math.max(2, parseInt($('cfgRsiPeriod').value, 10) || 6);
   settings.confluenceRequired = parseInt($('cfgConfluence').value, 10) === 3 ? 3 : 2;
+  settings.rsiExtremeEnabled = $('cfgRsiExtreme').checked;
+  settings.rsiOversold = parseFloat($('cfgRsiOversold').value) || 15;
+  settings.rsiOverbought = parseFloat($('cfgRsiOverbought').value) || 85;
   localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   log('Settings saved: ' + (settings.fixedLotSize ? settings.fixedLotSize + ' lots fixed' : settings.riskPercent + '% risk')
     + ', SL ' + settings.stopLossPips + 'p, TP ' + settings.takeProfitPips + 'p, '
     + settings.timeframeSeconds + 's candles, RSI(' + settings.rsiPeriod + '), '
-    + settings.confluenceRequired + '-of-3 confirmations.');
+    + settings.confluenceRequired + '-of-3 confirmations'
+    + (settings.rsiExtremeEnabled ? ', + RSI extreme (' + settings.rsiOversold + '/' + settings.rsiOverbought + ')' : '') + '.');
   $('settingsPanel').style.display = 'none';
 }
 $('settingsToggle').addEventListener('click', () => {
@@ -455,7 +473,9 @@ function handleMessage(m){
     }
 
     case PT.GET_TRENDBARS_RES: {
-      if(m.clientMsgId !== state.pendingTrendbarMsgId) break; // stale response from a symbol we've since left
+      // Match by symbol rather than message id — more robust than assuming
+      // the API echoes clientMsgId back on this response type.
+      if(p.symbolId != null && p.symbolId !== state.symbolId) break;
       const raw = p.trendbar || [];
       if(!raw.length){ log('No history returned for this symbol yet.'); break; }
       state.bars = raw.map(tb => {
@@ -577,7 +597,7 @@ function onSpot(p){
     l: state.currentBar.l, c: state.currentBar.c
   }]) : state.bars;
 
-  const signal = generateSignal(evalBars);
+  const signal = generateSignal(evalBars) || generateRsiExtremeSignal(evalBars);
   if(signal) maybeTrade(signal);
 }
 
@@ -675,6 +695,22 @@ function generateSignal(bars){
 
   if(bullScore >= need && crossedUp) return 'buy';
   if(bearScore >= need && crossedDown) return 'sell';
+  return null;
+}
+
+// Second, independent trigger: fires purely on RSI hitting a real extreme
+// (like the standalone alert script), no EMA/BB confirmation required.
+// Same order execution, risk sizing, and cooldown apply either way.
+function generateRsiExtremeSignal(bars){
+  if(!settings.rsiExtremeEnabled) return null;
+  if(bars.length < settings.rsiPeriod + 2) return null;
+  const closes = bars.map(b => b.c);
+  const rsiVals = rsi(closes, settings.rsiPeriod);
+  const i = closes.length - 1;
+  if(rsiVals[i] == null) return null;
+
+  if(rsiVals[i] <= settings.rsiOversold){ log('RSI extreme oversold (' + rsiVals[i].toFixed(1) + ') — buy trigger.'); return 'buy'; }
+  if(rsiVals[i] >= settings.rsiOverbought){ log('RSI extreme overbought (' + rsiVals[i].toFixed(1) + ') — sell trigger.'); return 'sell'; }
   return null;
 }
 
