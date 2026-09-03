@@ -85,8 +85,8 @@
   .status-line{ margin-top:12px; color:#6b7280; font-size:11px; text-align:center; line-height:1.6; }
   .status-line .live{ color:var(--ok); font-weight:700; }
   .status-line .halted{ color:var(--danger); font-weight:700; }
-  .log-box{ margin-top:8px; background:#000; border-radius:10px; padding:8px 10px; height:64px;
-    overflow-y:auto; font-size:10px; color:#7d8590; font-family:monospace; }
+  .log-box{ margin-top:8px; background:#000; border-radius:10px; padding:8px 10px; height:150px;
+    overflow-y:auto; font-size:11px; color:#7d8590; font-family:monospace; line-height:1.5; }
   .pair-row{ padding:10px 14px; font-size:13px; color:var(--text-dark); cursor:pointer; border-bottom:1px solid #e2e5ea; }
   .pair-row:last-child{ border-bottom:none; }
 
@@ -196,7 +196,14 @@
         <button class="tf-btn" data-min="30">30m</button>
         <button class="tf-btn" data-min="60">1H</button>
       </div>
+      <div style="display:flex; gap:10px; font-size:10px; color:var(--text-mid); margin-bottom:4px;">
+        <span><span style="color:#2b6cf6;">▬</span> EMA9</span>
+        <span><span style="color:#f97316;">▬</span> EMA21</span>
+        <span><span style="color:#8a93a6;">┅</span> Bollinger</span>
+      </div>
       <div id="chartContainer"></div>
+      <div style="font-size:10px; color:var(--text-mid); margin:4px 0 2px;">RSI(<span id="rsiLabelPeriod">6</span>)</div>
+      <div id="rsiContainer" style="width:100%; height:60px;"></div>
     </div>
 
     <button class="add-btn" id="settingsToggle">⚙ Strategies / lot size / SL-TP / speed</button>
@@ -299,8 +306,14 @@
       <div class="metric"><div class="label">Open trades</div><div class="value" id="metTrades">0</div></div>
     </div>
 
-    <div class="settings-section" style="margin-top:10px;">Open trades <span id="closeAllBtn" style="float:right; color:var(--danger); cursor:pointer; text-transform:none; font-weight:700;">Close all</span></div>
+    <div class="settings-section" style="margin-top:10px;">
+      <span id="tabPositions" style="cursor:pointer; border-bottom:2px solid var(--text-dark); padding-bottom:2px;">Positions</span>
+      &nbsp;&nbsp;
+      <span id="tabHistory" style="cursor:pointer; color:var(--text-mid);">History</span>
+      <span id="closeAllBtn" style="float:right; color:var(--danger); cursor:pointer; text-transform:none; font-weight:700;">Close all</span>
+    </div>
     <div id="positionsList" style="margin-bottom:6px;"></div>
+    <div id="historyList" style="margin-bottom:6px; display:none;"></div>
 
     <div class="status-line" id="engineStatus">Signal engine: <span class="live">connecting…</span></div>
     <div class="log-box" id="logBox"></div>
@@ -350,14 +363,18 @@ const state = {
   clientId:null, clientSecret:null, accessToken:null, env:'demo',
   accountId:null, accountReady:false,
   balance:null, positions:[],
-  symbol:'EURUSD', symbolId:null,
+  symbol:'EURUSD', symbolId:null, symbolDigits:5,
   symbolsById:{}, symbolList:[],
   bars:[], currentBar:null,
   running:false, lastSignalAt:null, lastError:null,
   dayStartBalance:null, dayKey:null,
   expecting:null, // 'strategy' | 'chart' — which pending GET_TRENDBARS_REQ we're waiting on
   chartTimeframeMin:5, chartCurrentBar:null, chartSeries:null, chart:null,
-  paperBalance:null, paperPositions:[],
+  chartBars:[], // full candle history for the DISPLAYED timeframe, used to compute chart indicators
+  ema9Series:null, ema21Series:null, bbUpperSeries:null, bbLowerSeries:null,
+  rsiChart:null, rsiSeries:null,
+  chartMarkers:[],
+  paperBalance:null, paperPositions:[], paperHistory:[],
 };
 
 const settings = {
@@ -370,6 +387,8 @@ const settings = {
   structureEnabled:false, structureLookback:20,
   paperMode:true, maxOpenTrades:3,
 };
+
+const paperLines = {}; // positionId -> {sl, tp} price line objects, for removing on close
 
 const $ = (id) => document.getElementById(id);
 function log(msg){
@@ -615,7 +634,11 @@ function handleMessage(m){
 
       if(state.expecting === 'chart'){
         if(state.chartSeries){
-          state.chartSeries.setData(candles.map(c => ({ time: Math.floor(c.t/1000), open:c.o, high:c.h, low:c.l, close:c.c })));
+          const chartCandles = candles.map(c => ({ time: Math.floor(c.t/1000), open:c.o, high:c.h, low:c.l, close:c.c }));
+          state.chartSeries.setData(chartCandles);
+          state.chartBars = chartCandles;
+          state.chartCurrentBar = null;
+          recomputeChartIndicators();
         }
         log('Chart loaded (' + state.chartTimeframeMin + 'm, ' + candles.length + ' bars).');
       } else {
@@ -662,8 +685,13 @@ function switchSymbol(symbolId, symbolName){
   }
   state.symbolId = symbolId;
   state.symbol = (symbolName || '').replace('/', '').toUpperCase();
+  const symObj = state.symbolsById[symbolId];
+  state.symbolDigits = symObj && symObj.digits != null ? symObj.digits : 5;
   state.bars = [];
   state.currentBar = null;
+  state.chartBars = [];
+  state.chartCurrentBar = null;
+  state.chartMarkers = [];
 
   send(PT.SUBSCRIBE_SPOTS_REQ, { ctidTraderAccountId: state.accountId, symbolId: [symbolId] });
   log('Subscribed to ' + state.symbol + '.');
@@ -712,6 +740,46 @@ function initChart(){
     upColor:'#16a34a', downColor:'#dc2626', borderVisible:false,
     wickUpColor:'#16a34a', wickDownColor:'#dc2626',
   });
+  state.ema9Series = state.chart.addLineSeries({ color:'#2b6cf6', lineWidth:1, priceLineVisible:false, lastValueVisible:false });
+  state.ema21Series = state.chart.addLineSeries({ color:'#f97316', lineWidth:1, priceLineVisible:false, lastValueVisible:false });
+  state.bbUpperSeries = state.chart.addLineSeries({ color:'#8a93a6', lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false });
+  state.bbLowerSeries = state.chart.addLineSeries({ color:'#8a93a6', lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false });
+
+  state.rsiChart = LightweightCharts.createChart($('rsiContainer'), {
+    layout:{ background:{color:'#f5f6f8'}, textColor:'#1c1f26', fontSize:9 },
+    grid:{ vertLines:{color:'#e2e5ea'}, horzLines:{color:'#e2e5ea'} },
+    timeScale:{ visible:false }, rightPriceScale:{ visible:true },
+    height:60,
+  });
+  state.rsiSeries = state.rsiChart.addLineSeries({ color:'#7c3aed', lineWidth:1 });
+  state.rsiSeries.createPriceLine({ price: settings.rsiOverbought, color:'#dc2626', lineStyle:2, lineWidth:1, axisLabelVisible:true, title:'OB' });
+  state.rsiSeries.createPriceLine({ price: settings.rsiOversold, color:'#16a34a', lineStyle:2, lineWidth:1, axisLabelVisible:true, title:'OS' });
+  $('rsiLabelPeriod').textContent = settings.rsiPeriod;
+
+  // keep both charts' time axes moving together
+  state.chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if(range) state.rsiChart.timeScale().setVisibleLogicalRange(range);
+  });
+}
+
+function recomputeChartIndicators(){
+  const bars = state.chartCurrentBar ? state.chartBars.concat([state.chartCurrentBar]) : state.chartBars;
+  if(bars.length < 22) return;
+  const closes = bars.map(b => b.close);
+  const times = bars.map(b => b.time);
+  const e9 = ema(closes, 9), e21 = ema(closes, 21);
+  const bb = bollinger(closes, 20, 2);
+  const r = rsi(closes, settings.rsiPeriod);
+
+  if(state.ema9Series){
+    state.ema9Series.setData(times.map((t,i) => ({ time:t, value:e9[i] })));
+    state.ema21Series.setData(times.map((t,i) => ({ time:t, value:e21[i] })));
+    state.bbUpperSeries.setData(times.map((t,i) => bb[i] ? { time:t, value:bb[i].upper } : null).filter(Boolean));
+    state.bbLowerSeries.setData(times.map((t,i) => bb[i] ? { time:t, value:bb[i].lower } : null).filter(Boolean));
+  }
+  if(state.rsiSeries){
+    state.rsiSeries.setData(times.map((t,i) => r[i]!=null ? { time:t, value:r[i] } : null).filter(Boolean));
+  }
 }
 function loadChartHistory(){
   if(state.symbolId == null) return;
@@ -739,6 +807,7 @@ function updateChartLiveTick(price){
   const bucket = Math.floor(Date.now()/tfMs) * tfMs;
   const timeSec = Math.floor(bucket/1000);
   if(!state.chartCurrentBar || state.chartCurrentBar.time !== timeSec){
+    if(state.chartCurrentBar){ state.chartBars.push(state.chartCurrentBar); if(state.chartBars.length>300) state.chartBars.shift(); }
     state.chartCurrentBar = { time:timeSec, open:price, high:price, low:price, close:price };
   } else {
     state.chartCurrentBar.high = Math.max(state.chartCurrentBar.high, price);
@@ -746,6 +815,26 @@ function updateChartLiveTick(price){
     state.chartCurrentBar.close = price;
   }
   state.chartSeries.update(state.chartCurrentBar);
+  recomputeChartIndicators();
+}
+
+function addTradeMarker(signal, price, tag){
+  const marker = {
+    time: Math.floor(Date.now()/1000),
+    position: signal==='buy' ? 'belowBar' : 'aboveBar',
+    color: signal==='buy' ? '#16a34a' : '#dc2626',
+    shape: signal==='buy' ? 'arrowUp' : 'arrowDown',
+    text: (tag || (signal==='buy'?'LONG':'SHORT')),
+  };
+  state.chartMarkers.push(marker);
+  if(state.chartMarkers.length > 100) state.chartMarkers.shift();
+  if(state.chartSeries) state.chartSeries.setMarkers(state.chartMarkers);
+}
+function addExitMarker(text, color){
+  const marker = { time: Math.floor(Date.now()/1000), position:'inBar', color, shape:'circle', text };
+  state.chartMarkers.push(marker);
+  if(state.chartMarkers.length > 100) state.chartMarkers.shift();
+  if(state.chartSeries) state.chartSeries.setMarkers(state.chartMarkers);
 }
 
 // ---- price stream -> candles -> strategies ------------------------------
@@ -859,26 +948,30 @@ function generateSignal(bars){
   return null;
 }
 
+let lastRsiExtremeLog = 0;
 function generateRsiExtremeSignal(bars){
   if(bars.length < settings.rsiPeriod + 2) return null;
   const closes = bars.map(b => b.c);
   const rsiVals = rsi(closes, settings.rsiPeriod);
   const i = closes.length - 1;
   if(rsiVals[i] == null) return null;
-  if(rsiVals[i] <= settings.rsiOversold){ log('[RSI-extreme] oversold ('+rsiVals[i].toFixed(1)+') — buy trigger.'); return 'buy'; }
-  if(rsiVals[i] >= settings.rsiOverbought){ log('[RSI-extreme] overbought ('+rsiVals[i].toFixed(1)+') — sell trigger.'); return 'sell'; }
+  const throttled = Date.now() - lastRsiExtremeLog > 8000;
+  if(rsiVals[i] <= settings.rsiOversold){ if(throttled){ log('[RSI-extreme] oversold ('+rsiVals[i].toFixed(1)+') — buy trigger.'); lastRsiExtremeLog = Date.now(); } return 'buy'; }
+  if(rsiVals[i] >= settings.rsiOverbought){ if(throttled){ log('[RSI-extreme] overbought ('+rsiVals[i].toFixed(1)+') — sell trigger.'); lastRsiExtremeLog = Date.now(); } return 'sell'; }
   return null;
 }
 
+let lastStructureLog = 0;
 function generateStructureSignal(bars){
   const lb = settings.structureLookback;
   if(bars.length < lb + 2) return null;
-  const window = bars.slice(-lb-1, -1); // excludes the just-formed bar
+  const window = bars.slice(-lb-1, -1);
   const recentHigh = Math.max(...window.map(b=>b.h));
   const recentLow = Math.min(...window.map(b=>b.l));
   const lastClose = bars[bars.length-1].c;
-  if(lastClose > recentHigh){ log('[Structure] broke above '+recentHigh.toFixed(5)+' — buy trigger.'); return 'buy'; }
-  if(lastClose < recentLow){ log('[Structure] broke below '+recentLow.toFixed(5)+' — sell trigger.'); return 'sell'; }
+  const throttled = Date.now() - lastStructureLog > 8000;
+  if(lastClose > recentHigh){ if(throttled){ log('[Structure] broke above '+recentHigh.toFixed(5)+' — buy trigger.'); lastStructureLog = Date.now(); } return 'buy'; }
+  if(lastClose < recentLow){ if(throttled){ log('[Structure] broke below '+recentLow.toFixed(5)+' — sell trigger.'); lastStructureLog = Date.now(); } return 'sell'; }
   return null;
 }
 
@@ -945,8 +1038,15 @@ function placeOrder(signal){
   const { slPrice, tpPrice, slPipsEquivalent } = getStopDistances();
   const lots = computeLots(state.balance, slPipsEquivalent);
   const volume = Math.round(lots * 100000 * 100);
-  const relSL = Math.round(slPrice * 100000);
-  const relTP = Math.round(tpPrice * 100000);
+
+  // cTrader requires the relative SL/TP to land exactly on this symbol's
+  // real price grid (its `digits`), not assume forex's 5-decimal precision.
+  // A gold (3-digit) stop of e.g. 0.5237 doesn't divide evenly at 1e5 scale
+  // and gets rejected as "invalid precision" — rounding to the symbol's
+  // actual tick step fixes that for every symbol, not just gold.
+  const tickScale = Math.pow(10, 5 - state.symbolDigits);
+  const relSL = Math.round(Math.round(slPrice * 100000) / tickScale) * tickScale;
+  const relTP = Math.round(Math.round(tpPrice * 100000) / tickScale) * tickScale;
 
   send(PT.NEW_ORDER_REQ, {
     ctidTraderAccountId: state.accountId, symbolId: state.symbolId,
@@ -954,6 +1054,7 @@ function placeOrder(signal){
     relativeStopLoss: relSL, relativeTakeProfit: relTP, label: 'scalper-bot'
   });
   log((signal==='buy'?'LONG':'SHORT')+' '+lots+' lots '+state.symbol+' (real order)');
+  addTradeMarker(signal, signal==='buy'?state.ask:state.bid);
 }
 
 function openPaperTrade(signal){
@@ -968,6 +1069,23 @@ function openPaperTrade(signal){
   };
   state.paperPositions.push(pos);
   log((signal==='buy'?'LONG':'SHORT')+' '+lots+' lots '+state.symbol+' @ '+entry.toFixed(5)+' (PAPER)');
+
+  addTradeMarker(signal, entry);
+  if(state.chartSeries){
+    paperLines[pos.id] = {
+      sl: state.chartSeries.createPriceLine({ price: pos.sl, color:'#dc2626', lineStyle:2, lineWidth:1, title:'SL '+pos.sl.toFixed(5) }),
+      tp: state.chartSeries.createPriceLine({ price: pos.tp, color:'#16a34a', lineStyle:2, lineWidth:1, title:'TP '+pos.tp.toFixed(5) }),
+    };
+  }
+}
+
+function removePaperLines(id){
+  const l = paperLines[id];
+  if(l && state.chartSeries){
+    if(l.sl) state.chartSeries.removePriceLine(l.sl);
+    if(l.tp) state.chartSeries.removePriceLine(l.tp);
+  }
+  delete paperLines[id];
 }
 
 function checkPaperPositions(){
@@ -981,12 +1099,18 @@ function checkPaperPositions(){
     if(!hitTp && !hitSl) return true;
     const exit = hitTp ? pos.tp : pos.sl;
     const pips = pos.side==='buy' ? (exit-pos.entry)/pip : (pos.entry-exit)/pip;
-    const pnl = pips * 10 * pos.lots; // approx pip value — paper mode estimate, not exact
+    const pnl = pips * 10 * pos.lots;
     state.paperBalance += pnl;
-    log((hitTp?'TP hit':'SL hit')+' on '+pos.side+' '+state.symbol+' — paper P&L '+(pnl>=0?'+':'')+pnl.toFixed(2));
+    const reason = hitTp ? 'TP' : 'SL';
+    log(reason+' hit on '+pos.side+' '+state.symbol+' — paper P&L '+(pnl>=0?'+':'')+pnl.toFixed(2));
+    addExitMarker(reason+' '+(pnl>=0?'+':'')+pnl.toFixed(2), hitTp?'#16a34a':'#dc2626');
+    removePaperLines(pos.id);
+    state.paperHistory.unshift({ side:pos.side, entry:pos.entry, exit, lots:pos.lots, pnl, reason, closedAt:Date.now() });
+    if(state.paperHistory.length > 50) state.paperHistory.pop();
     return false;
   });
   updateDashboard();
+  renderPositions();
 }
 
 // ---- close positions (real or paper) -------------------------------------
@@ -1005,6 +1129,10 @@ function closePaperPosition(id){
   state.paperBalance += pnl;
   state.paperPositions.splice(idx,1);
   log('Manually closed ' + pos.side + ' ' + state.symbol + ' — paper P&L ' + (pnl>=0?'+':'') + pnl.toFixed(2));
+  addExitMarker('Closed '+(pnl>=0?'+':'')+pnl.toFixed(2), pnl>=0?'#16a34a':'#dc2626');
+  removePaperLines(id);
+  state.paperHistory.unshift({ side:pos.side, entry:pos.entry, exit:price, lots:pos.lots, pnl, reason:'manual', closedAt:Date.now() });
+  if(state.paperHistory.length > 50) state.paperHistory.pop();
   renderPositions();
 }
 $('closeAllBtn').addEventListener('click', () => {
@@ -1054,6 +1182,40 @@ function renderPositions(){
   }
 }
 setInterval(renderPositions, 3000);
+
+$('tabPositions').addEventListener('click', () => {
+  $('tabPositions').style.borderBottom = '2px solid var(--text-dark)';
+  $('tabPositions').style.color = 'var(--text-mid)';
+  $('tabPositions').style.color = '';
+  $('tabHistory').style.borderBottom = 'none';
+  $('tabHistory').style.color = 'var(--text-mid)';
+  $('positionsList').style.display = 'block';
+  $('historyList').style.display = 'none';
+});
+$('tabHistory').addEventListener('click', () => {
+  $('tabHistory').style.borderBottom = '2px solid var(--text-dark)';
+  $('tabHistory').style.color = '';
+  $('tabPositions').style.borderBottom = 'none';
+  $('tabPositions').style.color = 'var(--text-mid)';
+  $('positionsList').style.display = 'none';
+  $('historyList').style.display = 'block';
+  renderHistory();
+});
+function renderHistory(){
+  const box = $('historyList');
+  if(!settings.paperMode){
+    box.innerHTML = '<div style="color:var(--text-mid); font-size:12px; text-align:center; padding:6px;">Real-trade history isn\'t parsed here yet — check cTrader\'s own History tab for full detail.</div>';
+    return;
+  }
+  if(!state.paperHistory.length){ box.innerHTML = '<div style="color:var(--text-mid); font-size:12px; text-align:center; padding:6px;">No closed trades yet.</div>'; return; }
+  box.innerHTML = state.paperHistory.map(h => {
+    return '<div class="pos-row">' +
+      '<span class="side ' + (h.side==='buy'?'long':'short') + '">' + (h.side==='buy'?'LONG':'SHORT') + '</span>' +
+      '<span class="info">' + state.symbol + ' · ' + h.lots + ' lots<br>' + h.entry.toFixed(5) + ' → ' + h.exit.toFixed(5) + ' (' + h.reason + ')</span>' +
+      '<span class="pnl ' + (h.pnl>=0?'pos':'neg') + '">' + (h.pnl>=0?'+':'') + h.pnl.toFixed(2) + '</span>' +
+    '</div>';
+  }).join('');
+}
 
 // ---- env switch -----------------------------------------------------------
 function switchEnv(newEnv){
