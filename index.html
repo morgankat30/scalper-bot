@@ -350,7 +350,7 @@ const PT = {
   SPOT_EVENT:2131, ORDER_ERROR_EVENT:2132, ERROR_RES:2142,
   GET_ACCOUNTS_REQ:2149, GET_ACCOUNTS_RES:2150,
   GET_TRENDBARS_REQ:2137, GET_TRENDBARS_RES:2138, HEARTBEAT:51,
-  CLOSE_POSITION_REQ:2111
+  CLOSE_POSITION_REQ:2111, SYMBOL_BY_ID_REQ:2116, SYMBOL_BY_ID_RES:2117
 };
 const TF_PERIODS = { 1:'M1', 5:'M5', 15:'M15', 30:'M30', 60:'H1' };
 const PIP = { EURUSD:0.0001, GBPUSD:0.0001, USDJPY:0.01, XAUUSD:0.01 };
@@ -363,7 +363,7 @@ const state = {
   clientId:null, clientSecret:null, accessToken:null, env:'demo',
   accountId:null, accountReady:false,
   balance:null, positions:[],
-  symbol:'EURUSD', symbolId:null, symbolDigits:5,
+  symbol:'EURUSD', symbolId:null, symbolDigits:5, symbolLotUnits:100000, symbolFullLoaded:false,
   symbolsById:{}, symbolList:[],
   bars:[], currentBar:null,
   running:false, lastSignalAt:null, lastError:null,
@@ -650,6 +650,17 @@ function handleMessage(m){
       break;
     }
 
+    case PT.SYMBOL_BY_ID_RES: {
+      const full = (p.symbol || [])[0];
+      if(full && full.symbolId === state.symbolId){
+        if(full.digits != null) state.symbolDigits = full.digits;
+        if(full.lotSize != null) state.symbolLotUnits = full.lotSize;
+        state.symbolFullLoaded = true;
+        log('Symbol precision loaded for ' + state.symbol + ': digits=' + state.symbolDigits + ', lot size=' + state.symbolLotUnits + ' units. Real orders now enabled.');
+      }
+      break;
+    }
+
     case PT.RECONCILE_RES:
       state.positions = p.position || [];
       updateDashboard();
@@ -685,6 +696,7 @@ function switchSymbol(symbolId, symbolName){
   }
   state.symbolId = symbolId;
   state.symbol = (symbolName || '').replace('/', '').toUpperCase();
+  state.symbolFullLoaded = false; // real digits/lotSize come from a SEPARATE request — see below
   const symObj = state.symbolsById[symbolId];
   state.symbolDigits = symObj && symObj.digits != null ? symObj.digits : 5;
   state.bars = [];
@@ -695,6 +707,12 @@ function switchSymbol(symbolId, symbolName){
 
   send(PT.SUBSCRIBE_SPOTS_REQ, { ctidTraderAccountId: state.accountId, symbolId: [symbolId] });
   log('Subscribed to ' + state.symbol + '.');
+
+  // The light symbol list has no digits/lotSize — that's only in this
+  // separate full-details response. Real orders are blocked until it lands
+  // (see maybeTrade), so we never again send a stop-loss guessed at the
+  // wrong precision.
+  send(PT.SYMBOL_BY_ID_REQ, { ctidTraderAccountId: state.accountId, symbolId: [symbolId] });
 
   state.expecting = 'strategy';
   send(PT.GET_TRENDBARS_REQ, {
@@ -1020,6 +1038,10 @@ function maybeTrade(signal){
     log('Max open trades (' + settings.maxOpenTrades + ') reached — skipping ' + (signal==='buy'?'LONG':'SHORT') + ' signal.');
     return;
   }
+  if(!settings.paperMode && !state.symbolFullLoaded){
+    log('Still loading ' + state.symbol + '\'s real precision/lot data from the broker — skipping this signal rather than risk another invalid order.');
+    return;
+  }
 
   log('🔥 Firing ' + (signal==='buy' ? 'LONG' : 'SHORT') + ' trade — setting up entry, SL, TP now.');
   if(settings.paperMode) openPaperTrade(signal);
@@ -1037,7 +1059,9 @@ function computeLots(bal, slPipsEquivalent){
 function placeOrder(signal){
   const { slPrice, tpPrice, slPipsEquivalent } = getStopDistances();
   const lots = computeLots(state.balance, slPipsEquivalent);
-  const volume = Math.round(lots * 100000 * 100);
+  // Use the broker's real lot size for this symbol (varies for metals/
+  // crypto/indices), not a hardcoded FX assumption of 100000 units/lot.
+  const volume = Math.round(lots * state.symbolLotUnits * 100);
 
   // cTrader requires the relative SL/TP to land exactly on this symbol's
   // real price grid (its `digits`), not assume forex's 5-decimal precision.
