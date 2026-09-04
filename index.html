@@ -230,11 +230,11 @@
         <input type="checkbox" id="cfgAtrEnabled" style="width:auto;">
       </div>
       <div class="field">
-        <label>Fixed stop loss (pips) — used when ATR is off</label>
+        <label>Stop loss ($) — used when ATR is off</label>
         <input type="number" id="cfgSL" step="0.5" value="5">
       </div>
       <div class="field">
-        <label>Fixed take profit (pips) — used when ATR is off</label>
+        <label>Take profit ($) — used when ATR is off</label>
         <input type="number" id="cfgTP" step="0.5" value="0.50">
       </div>
       <div class="field">
@@ -366,6 +366,7 @@ const state = {
   accountId:null, accountReady:false,
   balance:null, positions:[], moneyDigits:2, pendingBalanceCheck:null,
   symbol:'EURUSD', symbolId:null, symbolDigits:5, symbolLotUnits:100000, symbolFullLoaded:false,
+  symbolMinVolume:1000, symbolStepVolume:1000,
   symbolsById:{}, symbolList:[],
   bars:[], currentBar:null,
   running:false, lastSignalAt:null, lastError:null,
@@ -377,12 +378,12 @@ const state = {
   rsiChart:null, rsiSeries:null,
   chartMarkers:[],
   paperBalance:null, paperPositions:[], paperHistory:[],
-  pyramidLevel:1, pyramidDirection:null, batchCloseReasons:[],
+  pyramidLevel:1, pyramidDirection:null, batchCloseReasons:[], pyramidTargetForRound:1,
 };
 
 const settings = {
   fixedLotSize:0.01, riskPercent:1,
-  stopLossPips:5, takeProfitPips:0.50,
+  stopLossDollars:5, takeProfitDollars:0.50,
   atrEnabled:false, atrPeriod:14, atrSlMult:1.5, atrTpMult:2.5,
   timeframeSeconds:15, cooldownSeconds:5,
   rsiPeriod:6, confluenceRequired:2, confluenceEnabled:true,
@@ -438,8 +439,8 @@ function loadSavedSettings(){
   $('cfgLotSize').value = settings.fixedLotSize ?? '';
   $('cfgRisk').value = settings.riskPercent;
   $('cfgAtrEnabled').checked = settings.atrEnabled;
-  $('cfgSL').value = settings.stopLossPips;
-  $('cfgTP').value = settings.takeProfitPips;
+  $('cfgSL').value = settings.stopLossDollars;
+  $('cfgTP').value = settings.takeProfitDollars;
   $('cfgAtrPeriod').value = settings.atrPeriod;
   $('cfgAtrSlMult').value = settings.atrSlMult;
   $('cfgAtrTpMult').value = settings.atrTpMult;
@@ -462,8 +463,8 @@ function saveSettingsFromForm(){
   settings.fixedLotSize = isNaN(lot) || lot <= 0 ? null : lot;
   settings.riskPercent = parseFloat($('cfgRisk').value) || 1;
   settings.atrEnabled = $('cfgAtrEnabled').checked;
-  settings.stopLossPips = parseFloat($('cfgSL').value) || 5;
-  settings.takeProfitPips = parseFloat($('cfgTP').value) || 8;
+  settings.stopLossDollars = parseFloat($('cfgSL').value) || 5;
+  settings.takeProfitDollars = parseFloat($('cfgTP').value) || 0.50;
   settings.atrPeriod = Math.max(2, parseInt($('cfgAtrPeriod').value, 10) || 14);
   settings.atrSlMult = parseFloat($('cfgAtrSlMult').value) || 1.5;
   settings.atrTpMult = parseFloat($('cfgAtrTpMult').value) || 2.5;
@@ -483,7 +484,7 @@ function saveSettingsFromForm(){
     + ' | Confluence:' + (settings.confluenceEnabled?'on':'off')
     + ' RSI-extreme:' + (settings.rsiExtremeEnabled?'on':'off')
     + ' Structure:' + (settings.structureEnabled?'on':'off')
-    + ' | Stops: ' + (settings.atrEnabled ? 'ATR('+settings.atrPeriod+') x'+settings.atrSlMult+'/'+settings.atrTpMult : settings.stopLossPips+'p/'+settings.takeProfitPips+'p'));
+    + ' | Stops: ' + (settings.atrEnabled ? 'ATR('+settings.atrPeriod+') x'+settings.atrSlMult+'/'+settings.atrTpMult : '$'+settings.stopLossDollars+'/$'+settings.takeProfitDollars));
   updateActiveCardLabel();
   $('settingsPanel').style.display = 'none';
 }
@@ -671,6 +672,8 @@ function handleMessage(m){
       if(full && full.symbolId === state.symbolId){
         if(full.digits != null) state.symbolDigits = full.digits;
         if(full.lotSize != null) state.symbolLotUnits = full.lotSize;
+        state.symbolMinVolume = full.minVolume != null ? full.minVolume : state.symbolLotUnits/100;
+        state.symbolStepVolume = full.stepVolume != null ? full.stepVolume : state.symbolMinVolume;
         state.symbolFullLoaded = true;
         log('Symbol precision loaded for ' + state.symbol + ': digits=' + state.symbolDigits + ', lot size=' + state.symbolLotUnits + ' units. Real orders now enabled.');
       }
@@ -1024,22 +1027,40 @@ function generateStructureSignal(bars){
 }
 
 // ---- stop distances (ATR or fixed pips) ---------------------------------
-function getStopDistances(){
-  const pip = PIP[state.symbol] || 0.0001;
+// ---- volume rounding + dollar-per-price-unit conversion --------------
+// Matches the proven-working formula from the reference bot: volume is
+// rounded to the broker's own min/step size, and stop/take-profit are
+// configured directly in DOLLARS, converted to a price distance via how
+// many dollars this position's size actually moves per $1 of price change
+// — not pips, which is exactly where the earlier bugs kept coming from.
+
+function roundVolumeToStep(lots){
+  const raw = lots * state.symbolLotUnits;
+  const step = state.symbolStepVolume || state.symbolMinVolume || 1000;
+  const rounded = Math.max(state.symbolMinVolume, Math.round(raw/step)*step);
+  return rounded;
+}
+
+const USD_BASE_PAIRS = { USDJPY:1, USDCHF:1, USDCAD:1 };
+function dollarPerUnitFor(volumeInBrokerUnits){
+  const base = volumeInBrokerUnits / 100; // matches cTrader's own "volume is in cents" convention
+  if(USD_BASE_PAIRS[state.symbol] && state.bid){
+    return base / state.bid; // USD is the BASE currency for these three — P&L accrues in the quote currency
+  }
+  return base; // correct as-is for USD-quoted pairs (EURUSD, GBPUSD, XAUUSD, etc.)
+}
+
+function getStopDistances(volumeInBrokerUnits){
   if(settings.atrEnabled){
     const atrVal = computeATR(state.bars, settings.atrPeriod);
     if(atrVal){
-      return {
-        slPrice: atrVal * settings.atrSlMult,
-        tpPrice: atrVal * settings.atrTpMult,
-        slPipsEquivalent: (atrVal * settings.atrSlMult) / pip,
-      };
+      return { slPrice: atrVal * settings.atrSlMult, tpPrice: atrVal * settings.atrTpMult };
     }
   }
+  const dpu = dollarPerUnitFor(volumeInBrokerUnits);
   return {
-    slPrice: settings.stopLossPips * pip,
-    tpPrice: settings.takeProfitPips * pip,
-    slPipsEquivalent: settings.stopLossPips,
+    slPrice: dpu > 0 ? settings.stopLossDollars / dpu : 0,
+    tpPrice: dpu > 0 ? settings.takeProfitDollars / dpu : 0,
   };
 }
 
@@ -1104,10 +1125,15 @@ function maybeTrade(signal){
       batchSize = 1;
     }
     batchSize = Math.min(batchSize, settings.maxOpenTrades);
+    state.pyramidTargetForRound = batchSize;
     log('Opening a new ' + (signal==='buy'?'LONG':'SHORT') + ' batch of ' + batchSize + ' (pyramid level ' + state.pyramidLevel + ').');
   } else {
-    // Already have an open batch in this same direction — top it up by one
-    // if there's room, same as before, rather than re-opening the whole batch.
+    // Mid-round: this round already has its target count decided when it
+    // started. Don't keep adding more just because another signal fired —
+    // wait for this batch to close before the next round decides its size.
+    if(openCount >= state.pyramidTargetForRound){
+      return;
+    }
     batchSize = 1;
   }
 
@@ -1121,53 +1147,49 @@ function maybeTrade(signal){
   }
   state.lastSignalAt = Date.now();
 }
-function computeLots(bal, slPipsEquivalent){
+function computeLots(){
   if(settings.fixedLotSize) return settings.fixedLotSize;
-  const riskAmount = bal * (settings.riskPercent / 100);
-  const pipValuePerLot = 10; // approx for major FX at 1.0 lot — verify per symbol on demo
-  const rawLots = riskAmount / (slPipsEquivalent * pipValuePerLot);
-  return Math.max(0.01, Math.min(Math.floor(rawLots*100)/100, 5));
+  // No lot size typed in: fall back to the broker's own minimum rather than
+  // a pip-based guess — dollar-based SL/TP below no longer depends on lots
+  // to determine risk (the dollar amount lost on a stop is fixed by design),
+  // so there's no strong reason to size up automatically here anymore.
+  return (state.symbolMinVolume || 1000) / (state.symbolLotUnits || 100000);
 }
 
 function placeOrder(signal){
-  const { slPrice, tpPrice, slPipsEquivalent } = getStopDistances();
-  const lots = computeLots(state.balance, slPipsEquivalent);
-  // lotSize from the broker is already the full raw volume value for 1.0
-  // lot (e.g. 10000 for this account's gold, 10000000 for EURUSD) — do NOT
-  // multiply by 100 again on top of that, that was the actual bug that
-  // made every order come out 100x too large and get rejected.
-  const volume = Math.round(lots * state.symbolLotUnits);
+  const lots = computeLots();
+  const volume = roundVolumeToStep(lots);
+  const { slPrice, tpPrice } = getStopDistances(volume);
 
-  // cTrader requires the relative SL/TP to land exactly on this symbol's
-  // real price grid (its `digits`), not assume forex's 5-decimal precision.
-  // A gold (3-digit) stop of e.g. 0.5237 doesn't divide evenly at 1e5 scale
-  // and gets rejected as "invalid precision" — rounding to the symbol's
-  // actual tick step fixes that for every symbol, not just gold.
-  const tickScale = Math.pow(10, 5 - state.symbolDigits);
-  const relSL = Math.round(Math.round(slPrice * 100000) / tickScale) * tickScale;
-  const relTP = Math.round(Math.round(tpPrice * 100000) / tickScale) * tickScale;
+  const relSL = Math.round(slPrice * 100000);
+  const relTP = Math.round(tpPrice * 100000);
 
-  send(PT.NEW_ORDER_REQ, {
+  const orderPayload = {
     ctidTraderAccountId: state.accountId, symbolId: state.symbolId,
     orderType: 1, tradeSide: signal === 'buy' ? 1 : 2, volume,
-    relativeStopLoss: relSL, relativeTakeProfit: relTP, label: 'scalper-bot'
-  });
-  log((signal==='buy'?'LONG':'SHORT')+' '+lots+' lots '+state.symbol+' (real order)');
+    relativeStopLoss: relSL, label: 'scalper-bot'
+  };
+  if(relTP > 0) orderPayload.relativeTakeProfit = relTP;
+  send(PT.NEW_ORDER_REQ, orderPayload);
+
+  log((signal==='buy'?'LONG':'SHORT')+' '+(volume/state.symbolLotUnits).toFixed(2)+' lots '+state.symbol+' — SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars+' (real order)');
   addTradeMarker(signal, signal==='buy'?state.ask:state.bid);
 }
 
 function openPaperTrade(signal){
-  const { slPrice, tpPrice, slPipsEquivalent } = getStopDistances();
-  const lots = computeLots(state.paperBalance, slPipsEquivalent);
+  const lots = computeLots();
+  const volume = roundVolumeToStep(lots);
+  const { slPrice, tpPrice } = getStopDistances(volume);
   const entry = signal === 'buy' ? state.ask : state.bid;
   if(!entry) return;
+  const actualLots = volume / state.symbolLotUnits;
   const pos = {
-    id: 'p'+Date.now(), side: signal, entry, lots,
+    id: 'p'+Date.now(), side: signal, entry, lots: actualLots,
     sl: signal==='buy' ? entry - slPrice : entry + slPrice,
-    tp: signal==='buy' ? entry + tpPrice : entry - tpPrice,
+    tp: tpPrice > 0 ? (signal==='buy' ? entry + tpPrice : entry - tpPrice) : null,
   };
   state.paperPositions.push(pos);
-  log((signal==='buy'?'LONG':'SHORT')+' '+lots+' lots '+state.symbol+' @ '+entry.toFixed(5)+' (PAPER)');
+  log((signal==='buy'?'LONG':'SHORT')+' '+actualLots.toFixed(2)+' lots '+state.symbol+' @ '+entry.toFixed(5)+' — SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars+' (PAPER)');
 
   addTradeMarker(signal, entry);
   if(state.chartSeries){
@@ -1189,16 +1211,15 @@ function removePaperLines(id){
 
 function checkPaperPositions(){
   if(!state.paperPositions.length) return;
-  const pip = PIP[state.symbol] || 0.0001;
   const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
   if(!price) return;
   state.paperPositions = state.paperPositions.filter(pos => {
-    const hitTp = pos.side==='buy' ? price >= pos.tp : price <= pos.tp;
+    const hitTp = pos.tp != null && (pos.side==='buy' ? price >= pos.tp : price <= pos.tp);
     const hitSl = pos.side==='buy' ? price <= pos.sl : price >= pos.sl;
     if(!hitTp && !hitSl) return true;
     const exit = hitTp ? pos.tp : pos.sl;
-    const pips = pos.side==='buy' ? (exit-pos.entry)/pip : (pos.entry-exit)/pip;
-    const pnl = pips * 10 * pos.lots;
+    const priceDiff = pos.side==='buy' ? (exit-pos.entry) : (pos.entry-exit);
+    const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
     state.paperBalance += pnl;
     const reason = hitTp ? 'TP' : 'SL';
     log(reason+' hit on '+pos.side+' '+state.symbol+' — paper P&L '+(pnl>=0?'+':'')+pnl.toFixed(2));
@@ -1234,9 +1255,8 @@ function closePaperPosition(id){
   if(idx === -1) return;
   const pos = state.paperPositions[idx];
   const price = state.bid && state.ask ? (state.bid+state.ask)/2 : pos.entry;
-  const pip = PIP[state.symbol] || 0.0001;
-  const pips = pos.side==='buy' ? (price-pos.entry)/pip : (pos.entry-price)/pip;
-  const pnl = pips * 10 * pos.lots;
+  const priceDiff = pos.side==='buy' ? (price-pos.entry) : (pos.entry-price);
+  const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
   state.paperBalance += pnl;
   state.paperPositions.splice(idx,1);
   log('Manually closed ' + pos.side + ' ' + state.symbol + ' — paper P&L ' + (pnl>=0?'+':'') + pnl.toFixed(2));
@@ -1264,16 +1284,15 @@ $('closeAllBtn').addEventListener('click', () => {
 function renderPositions(){
   const box = $('positionsList');
   const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
-  const pip = PIP[state.symbol] || 0.0001;
 
   if(settings.paperMode){
     if(!state.paperPositions.length){ box.innerHTML = '<div style="color:var(--text-mid); font-size:12px; text-align:center; padding:6px;">No open trades.</div>'; return; }
     box.innerHTML = state.paperPositions.map(pos => {
-      const pips = price ? (pos.side==='buy' ? (price-pos.entry)/pip : (pos.entry-price)/pip) : 0;
-      const pnl = pips * 10 * pos.lots;
+      const priceDiff = price ? (pos.side==='buy' ? (price-pos.entry) : (pos.entry-price)) : 0;
+      const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
       return '<div class="pos-row">' +
         '<span class="side ' + (pos.side==='buy'?'long':'short') + '">' + (pos.side==='buy'?'LONG':'SHORT') + '</span>' +
-        '<span class="info">' + state.symbol + ' · ' + pos.lots + ' lots<br>entry ' + pos.entry.toFixed(5) + '</span>' +
+        '<span class="info">' + state.symbol + ' · ' + pos.lots.toFixed(2) + ' lots<br>entry ' + pos.entry.toFixed(5) + '</span>' +
         '<span class="pnl ' + (pnl>=0?'pos':'neg') + '">' + (pnl>=0?'+':'') + pnl.toFixed(2) + '</span>' +
         '<button class="close-x" data-id="' + pos.id + '">Close</button>' +
       '</div>';
@@ -1286,8 +1305,8 @@ function renderPositions(){
       const side = td.tradeSide === 1 ? 'buy' : 'sell';
       const entry = pos.price; // already a real decimal price, not 1e5-scaled
       const vol = (td.volume || 0) / state.symbolLotUnits;
-      const pips = price && entry ? (side==='buy' ? (price-entry)/pip : (entry-price)/pip) : 0;
-      const pnl = pips * 10 * vol;
+      const priceDiff = price && entry ? (side==='buy' ? (price-entry) : (entry-price)) : 0;
+      const pnl = priceDiff * dollarPerUnitFor(td.volume || 0);
       return '<div class="pos-row">' +
         '<span class="side ' + (side==='buy'?'long':'short') + '">' + (side==='buy'?'LONG':'SHORT') + '</span>' +
         '<span class="info">' + state.symbol + ' · ' + vol.toFixed(2) + ' lots<br>entry ' + (entry!=null?entry.toFixed(5):'—') + '</span>' +
@@ -1360,21 +1379,19 @@ function onConnected(){
 function computeFloatingPnl(){
   const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
   if(!price) return 0;
-  const pip = PIP[state.symbol] || 0.0001;
   if(settings.paperMode){
     return state.paperPositions.reduce((sum,pos) => {
-      const pips = pos.side==='buy' ? (price-pos.entry)/pip : (pos.entry-price)/pip;
-      return sum + pips*10*pos.lots;
+      const priceDiff = pos.side==='buy' ? (price-pos.entry) : (pos.entry-price);
+      return sum + priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
     }, 0);
   }
   return state.positions.reduce((sum,pos) => {
     const td = pos.tradeData || {};
     const side = td.tradeSide === 1 ? 'buy' : 'sell';
     const entry = pos.price;
-    const vol = (td.volume || 0) / state.symbolLotUnits;
     if(entry == null) return sum;
-    const pips = side==='buy' ? (price-entry)/pip : (entry-price)/pip;
-    return sum + pips*10*vol;
+    const priceDiff = side==='buy' ? (price-entry) : (entry-price);
+    return sum + priceDiff * dollarPerUnitFor(td.volume || 0);
   }, 0);
 }
 
