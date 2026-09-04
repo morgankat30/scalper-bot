@@ -303,6 +303,8 @@
       <div class="metric"><div class="label">Account</div><div class="value" id="metAccount">—</div></div>
       <div class="metric"><div class="label">Mode</div><div class="value" id="metEnv">—</div></div>
       <div class="metric"><div class="label">Balance</div><div class="value" id="metBalance">—</div></div>
+      <div class="metric"><div class="label">Equity (bal + floating)</div><div class="value" id="metEquity">—</div></div>
+      <div class="metric"><div class="label">Floating P&L</div><div class="value" id="metPnl">—</div></div>
       <div class="metric"><div class="label">Open trades</div><div class="value" id="metTrades">0</div></div>
     </div>
 
@@ -362,7 +364,7 @@ const state = {
   ws:null, msgSeq:0, hbTimer:null, manualDisconnect:false,
   clientId:null, clientSecret:null, accessToken:null, env:'demo',
   accountId:null, accountReady:false,
-  balance:null, positions:[],
+  balance:null, positions:[], moneyDigits:2, pendingBalanceCheck:null,
   symbol:'EURUSD', symbolId:null, symbolDigits:5, symbolLotUnits:100000, symbolFullLoaded:false,
   symbolsById:{}, symbolList:[],
   bars:[], currentBar:null,
@@ -526,7 +528,6 @@ function connectWithCreds(creds){
     if(state.hbTimer) clearInterval(state.hbTimer);
     state.hbTimer = setInterval(() => send(PT.HEARTBEAT, {}), 20000);
   };
-
   ws.onmessage = (ev) => {
     let m; try { m = JSON.parse(ev.data); } catch(e) { return; }
     handleMessage(m);
@@ -601,11 +602,25 @@ function handleMessage(m){
       onConnected();
       break;
 
-    case PT.TRADER_RES:
-      state.balance = p.trader && p.trader.balance != null ? p.trader.balance / 100 : null;
+    case PT.TRADER_RES: {
+      state.moneyDigits = p.trader && p.trader.moneyDigits != null ? p.trader.moneyDigits : 2;
+      const brokerBalance = p.trader && p.trader.balance != null ? p.trader.balance / Math.pow(10, state.moneyDigits) : null;
+      if(state.pendingBalanceCheck){
+        const pc = state.pendingBalanceCheck;
+        if(brokerBalance === pc.preCloseBalance && pc.attempt < 4){
+          state.pendingBalanceCheck = { preCloseBalance: pc.preCloseBalance, attempt: pc.attempt+1 };
+          setTimeout(() => send(PT.TRADER_REQ, { ctidTraderAccountId: state.accountId }), 2000);
+        } else {
+          state.pendingBalanceCheck = null;
+          state.balance = brokerBalance;
+        }
+      } else {
+        state.balance = brokerBalance;
+      }
       if(state.paperBalance == null && state.balance != null) state.paperBalance = state.balance;
       updateDashboard();
       break;
+    }
 
     case PT.SYMBOLS_LIST_RES: {
       const list = p.symbol || [];
@@ -683,6 +698,11 @@ function handleMessage(m){
     case PT.EXECUTION_EVENT:
       log('Execution event received.');
       send(PT.RECONCILE_REQ, { ctidTraderAccountId: state.accountId, returnProtectionOrders: true });
+      // Balance doesn't update instantly server-side after a fill/close —
+      // poll a few times until it actually differs, instead of asking once
+      // and showing a stale number.
+      state.pendingBalanceCheck = { preCloseBalance: state.balance, attempt: 0 };
+      setTimeout(() => send(PT.TRADER_REQ, { ctidTraderAccountId: state.accountId }), 1500);
       break;
 
     case PT.ORDER_ERROR_EVENT:
@@ -1278,6 +1298,9 @@ function renderPositions(){
     box.querySelectorAll('.close-x').forEach(btn => btn.addEventListener('click', () => closeRealPosition(parseInt(btn.dataset.id,10), parseInt(btn.dataset.vol,10))));
   }
 }
+setInterval(() => {
+  if(state.accountReady && !state.pendingBalanceCheck) send(PT.TRADER_REQ, { ctidTraderAccountId: state.accountId });
+}, 20000);
 setInterval(renderPositions, 3000);
 
 $('tabPositions').addEventListener('click', () => {
@@ -1334,11 +1357,38 @@ function onConnected(){
   updateActiveCardLabel();
   updateDashboard();
 }
+function computeFloatingPnl(){
+  const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
+  if(!price) return 0;
+  const pip = PIP[state.symbol] || 0.0001;
+  if(settings.paperMode){
+    return state.paperPositions.reduce((sum,pos) => {
+      const pips = pos.side==='buy' ? (price-pos.entry)/pip : (pos.entry-price)/pip;
+      return sum + pips*10*pos.lots;
+    }, 0);
+  }
+  return state.positions.reduce((sum,pos) => {
+    const td = pos.tradeData || {};
+    const side = td.tradeSide === 1 ? 'buy' : 'sell';
+    const entry = pos.price;
+    const vol = (td.volume || 0) / state.symbolLotUnits;
+    if(entry == null) return sum;
+    const pips = side==='buy' ? (price-entry)/pip : (entry-price)/pip;
+    return sum + pips*10*vol;
+  }, 0);
+}
+
 function updateDashboard(){
   $('metAccount').textContent = state.accountId || '—';
   $('metEnv').textContent = state.env + (settings.paperMode ? ' (paper)' : '');
   const bal = settings.paperMode ? state.paperBalance : state.balance;
   $('metBalance').textContent = bal != null ? bal.toFixed(2) : '—';
+  const floatingPnl = computeFloatingPnl();
+  const equity = bal != null ? bal + floatingPnl : null;
+  $('metEquity').textContent = equity != null ? equity.toFixed(2) : '—';
+  const pnlEl = $('metPnl');
+  pnlEl.textContent = (floatingPnl>=0?'+':'') + floatingPnl.toFixed(2) + ' (est.)';
+  pnlEl.style.color = floatingPnl >= 0 ? 'var(--ok)' : 'var(--danger)';
   $('metTrades').textContent = settings.paperMode ? state.paperPositions.length : state.positions.length;
   $('stopIcon').textContent = state.running ? '⏸' : '▶';
   $('stopLabel').textContent = state.running ? 'Stop' : 'Start';
