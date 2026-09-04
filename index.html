@@ -235,7 +235,7 @@
       </div>
       <div class="field">
         <label>Fixed take profit (pips) — used when ATR is off</label>
-        <input type="number" id="cfgTP" step="0.5" value="8">
+        <input type="number" id="cfgTP" step="0.5" value="0.50">
       </div>
       <div class="field">
         <label>ATR period / SL multiplier / TP multiplier</label>
@@ -375,11 +375,12 @@ const state = {
   rsiChart:null, rsiSeries:null,
   chartMarkers:[],
   paperBalance:null, paperPositions:[], paperHistory:[],
+  pyramidLevel:1, pyramidDirection:null, batchCloseReasons:[],
 };
 
 const settings = {
   fixedLotSize:0.01, riskPercent:1,
-  stopLossPips:5, takeProfitPips:8,
+  stopLossPips:5, takeProfitPips:0.50,
   atrEnabled:false, atrPeriod:14, atrSlMult:1.5, atrTpMult:2.5,
   timeframeSeconds:15, cooldownSeconds:5,
   rsiPeriod:6, confluenceRequired:2, confluenceEnabled:true,
@@ -661,10 +662,19 @@ function handleMessage(m){
       break;
     }
 
-    case PT.RECONCILE_RES:
+    case PT.RECONCILE_RES: {
+      const wasOpen = state.positions.length > 0;
       state.positions = p.position || [];
+      if(!settings.paperMode && wasOpen && state.positions.length === 0){
+        // Real-mode approximation: execution events don't cleanly tell us
+        // TP vs SL here yet, so we just advance on "went flat" rather than
+        // reset-on-loss like paper mode does. Less precise, flagged as such.
+        state.pyramidLevel = Math.min(state.pyramidLevel + 1, settings.maxOpenTrades);
+        log('Position count returned to 0 — next same-direction batch will open ' + state.pyramidLevel + ' (approximate, real-mode).');
+      }
       updateDashboard();
       break;
+    }
 
     case PT.SPOT_EVENT:
       onSpot(p);
@@ -1021,6 +1031,13 @@ function dailyLossHalted(bal){
   return ((state.dayStartBalance - bal) / state.dayStartBalance) * 100 >= MAX_DAILY_LOSS_PERCENT;
 }
 
+function currentOpenSide(){
+  if(settings.paperMode) return state.paperPositions.length ? state.paperPositions[0].side : null;
+  if(!state.positions.length) return null;
+  const td = state.positions[0].tradeData || {};
+  return td.tradeSide === 1 ? 'buy' : 'sell';
+}
+
 function maybeTrade(signal){
   if(!state.running) return;
   const bal = settings.paperMode ? state.paperBalance : state.balance;
@@ -1034,18 +1051,54 @@ function maybeTrade(signal){
   if(state.lastSignalAt && Date.now() - state.lastSignalAt < settings.cooldownSeconds * 1000) return;
 
   const openCount = settings.paperMode ? state.paperPositions.length : state.positions.length;
-  if(openCount >= settings.maxOpenTrades){
-    log('Max open trades (' + settings.maxOpenTrades + ') reached — skipping ' + (signal==='buy'?'LONG':'SHORT') + ' signal.');
+  const openSide = currentOpenSide();
+
+  // Direction lock: never hold LONG and SHORT at the same time. If
+  // something is already open in the opposite direction, skip this signal
+  // entirely rather than stacking both sides.
+  if(openSide && openSide !== signal){
+    log('Already holding ' + (openSide==='buy'?'LONG':'SHORT') + ' — skipping opposite ' + (signal==='buy'?'LONG':'SHORT') + ' signal (one direction at a time).');
     return;
   }
+
   if(!settings.paperMode && !state.symbolFullLoaded){
     log('Still loading ' + state.symbol + '\'s real precision/lot data from the broker — skipping this signal rather than risk another invalid order.');
     return;
   }
 
+  if(openCount >= settings.maxOpenTrades){
+    log('Max open trades (' + settings.maxOpenTrades + ') reached — skipping ' + (signal==='buy'?'LONG':'SHORT') + ' signal.');
+    return;
+  }
+
+  // Staged pyramiding: starting flat, open 1; after a winning (TP) round in
+  // the same direction, the next round opens 2, then 3, up to your max.
+  // A stop-loss or a direction change resets back to 1.
+  let batchSize = 1;
+  if(openCount === 0){
+    if(state.pyramidDirection === signal){
+      batchSize = state.pyramidLevel;
+    } else {
+      state.pyramidDirection = signal;
+      state.pyramidLevel = 1;
+      batchSize = 1;
+    }
+    batchSize = Math.min(batchSize, settings.maxOpenTrades);
+    log('Opening a new ' + (signal==='buy'?'LONG':'SHORT') + ' batch of ' + batchSize + ' (pyramid level ' + state.pyramidLevel + ').');
+  } else {
+    // Already have an open batch in this same direction — top it up by one
+    // if there's room, same as before, rather than re-opening the whole batch.
+    batchSize = 1;
+  }
+
+  const roomLeft = settings.maxOpenTrades - openCount;
+  const toOpen = Math.min(batchSize, roomLeft);
+
   log('🔥 Firing ' + (signal==='buy' ? 'LONG' : 'SHORT') + ' trade — setting up entry, SL, TP now.');
-  if(settings.paperMode) openPaperTrade(signal);
-  else placeOrder(signal);
+  for(let i=0;i<toOpen;i++){
+    if(settings.paperMode) openPaperTrade(signal);
+    else placeOrder(signal);
+  }
   state.lastSignalAt = Date.now();
 }
 function computeLots(bal, slPipsEquivalent){
@@ -1133,8 +1186,20 @@ function checkPaperPositions(){
     removePaperLines(pos.id);
     state.paperHistory.unshift({ side:pos.side, entry:pos.entry, exit, lots:pos.lots, pnl, reason, closedAt:Date.now() });
     if(state.paperHistory.length > 50) state.paperHistory.pop();
+    state.batchCloseReasons.push(reason);
     return false;
   });
+  if(!state.paperPositions.length && state.batchCloseReasons.length){
+    const allTp = state.batchCloseReasons.every(r => r === 'TP');
+    if(allTp){
+      state.pyramidLevel = Math.min(state.pyramidLevel + 1, settings.maxOpenTrades);
+      log('Full batch closed on TP — next same-direction batch will open ' + state.pyramidLevel + '.');
+    } else {
+      state.pyramidLevel = 1;
+      log('Batch included a stop-loss — pyramid reset back to 1.');
+    }
+    state.batchCloseReasons = [];
+  }
   updateDashboard();
   renderPositions();
 }
@@ -1159,6 +1224,12 @@ function closePaperPosition(id){
   removePaperLines(id);
   state.paperHistory.unshift({ side:pos.side, entry:pos.entry, exit:price, lots:pos.lots, pnl, reason:'manual', closedAt:Date.now() });
   if(state.paperHistory.length > 50) state.paperHistory.pop();
+  state.batchCloseReasons.push('manual');
+  if(!state.paperPositions.length){
+    state.pyramidLevel = 1;
+    state.batchCloseReasons = [];
+    log('Manual close — pyramid reset back to 1.');
+  }
   renderPositions();
 }
 $('closeAllBtn').addEventListener('click', () => {
@@ -1194,7 +1265,7 @@ function renderPositions(){
       const td = pos.tradeData || {};
       const side = td.tradeSide === 1 ? 'buy' : 'sell';
       const entry = pos.price; // already a real decimal price, not 1e5-scaled
-      const vol = (td.volume || 0) / 100000; // volume is in hundredths of a unit
+      const vol = (td.volume || 0) / state.symbolLotUnits;
       const pips = price && entry ? (side==='buy' ? (price-entry)/pip : (entry-price)/pip) : 0;
       const pnl = pips * 10 * vol;
       return '<div class="pos-row">' +
