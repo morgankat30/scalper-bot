@@ -1016,29 +1016,44 @@ function onSpot(p){
   state.ask = ask || state.ask;
   const mid = ((state.bid || 0) + (state.ask || 0)) / 2 || state.bid || state.ask;
 
-  pushToBars(mid);
+  const barClosed = pushToBars(mid);
   updateChartLiveTick(mid);
-  checkPaperPositions();
+  checkPaperPositions(); // TP/SL still watched every tick — only ENTRIES wait for a close
 
-  const evalBars = state.currentBar ? state.bars.concat([{ t:state.currentBar.t, o:state.currentBar.o, h:state.currentBar.h, l:state.currentBar.l, c:state.currentBar.c }]) : state.bars;
-
-  const signal = (settings.confluenceEnabled && generateSignal(evalBars))
-    || (settings.rsiExtremeEnabled && generateRsiExtremeSignal(evalBars))
-    || (settings.structureEnabled && generateStructureSignal(evalBars));
-  if(signal) maybeTrade(signal);
+  // FIX ("entering trades very early before the final direction starts to
+  // move... starts in loss for a long time"): this used to evaluate every
+  // strategy (confluence, RSI-extreme, structure break) on EVERY tick,
+  // against state.currentBar — the still-forming candle, not a closed one.
+  // A "structure break" could fire the instant a brief wick poked past a
+  // recent high/low, even if price snapped straight back the next tick —
+  // no confirmation the move actually held. That's exactly your
+  // screenshot: SHORT fired right as price ticked below a level, then
+  // chopped back up into a small loss. Now signals are only evaluated once
+  // a candle actually CLOSES, using its final, settled OHLC — a fake
+  // wick mid-candle can no longer trigger an entry, only a real, held
+  // break confirmed at candle close can. Exits (checkPaperPositions above)
+  // still react every tick, same as before — only entries wait.
+  if(barClosed){
+    const signal = (settings.confluenceEnabled && generateSignal(state.bars))
+      || (settings.rsiExtremeEnabled && generateRsiExtremeSignal(state.bars))
+      || (settings.structureEnabled && generateStructureSignal(state.bars));
+    if(signal) maybeTrade(signal);
+  }
 }
 
 function pushToBars(price){
   const tfMs = settings.timeframeSeconds * 1000;
   const now = Math.floor(Date.now() / tfMs) * tfMs;
+  let barClosed = false;
   if(!state.currentBar || state.currentBar.t !== now){
-    if(state.currentBar){ state.bars.push(state.currentBar); if(state.bars.length > 200) state.bars.shift(); }
+    if(state.currentBar){ state.bars.push(state.currentBar); if(state.bars.length > 200) state.bars.shift(); barClosed = true; }
     state.currentBar = { t: now, o: price, h: price, l: price, c: price };
   } else {
     state.currentBar.h = Math.max(state.currentBar.h, price);
     state.currentBar.l = Math.min(state.currentBar.l, price);
     state.currentBar.c = price;
   }
+  return barClosed;
 }
 
 function ema(values, period){
