@@ -673,8 +673,31 @@ function handleMessage(m){
       if(full && full.symbolId === state.symbolId){
         if(full.digits != null) state.symbolDigits = full.digits;
         if(full.lotSize != null) state.symbolLotUnits = full.lotSize;
-        state.symbolMinVolume = full.minVolume != null ? full.minVolume : state.symbolLotUnits/100;
-        state.symbolStepVolume = full.stepVolume != null ? full.stepVolume : state.symbolMinVolume;
+        // FIX ("not trading crypto pairs, not even paper mode, on demo or
+        // live" — BTCUSD specifically): the broker's own SYMBOL_BY_ID_RES
+        // reported minVolume=99999999999900 for this symbol — a number with
+        // no sane relationship to lotSize=100. That's not this code getting
+        // something wrong; it's genuinely broken metadata coming back from
+        // the API for this crypto CFD (a known rough edge with a few
+        // brokers' crypto symbols specifically — FX/metals symbols on the
+        // same account load fine, per EURUSD's normal numbers in the log).
+        // The existing roundVolumeToStep() safety net downstream correctly
+        // refused to act on that garbage rather than send an
+        // absurd order — exactly what it's there for — but that meant this
+        // symbol could never trade at all, in EITHER real or paper mode
+        // (paper mode uses this same computed volume purely for its own
+        // simulated math, so it was being blocked by the same broken
+        // number for no financial-risk reason at all).
+        // Real fix: sanity-check minVolume/stepVolume the moment they're
+        // loaded, right here at the source. A sane minimum trade size
+        // should never be more than 100 full lots' worth of units — if the
+        // broker hands back something past that, it's clearly not a real
+        // minimum, so fall back to the same 0.01-lot default this file
+        // already uses when the broker sends no minVolume at all (see the
+        // "!= null" fallback below) rather than trusting the garbage value.
+        const sane = v => (v != null && v > 0 && v <= state.symbolLotUnits * 100) ? v : null;
+        state.symbolMinVolume = sane(full.minVolume) || state.symbolLotUnits/100;
+        state.symbolStepVolume = sane(full.stepVolume) || state.symbolMinVolume;
         state.symbolFullLoaded = true;
         log('Symbol precision loaded for ' + state.symbol + ': digits=' + state.symbolDigits + ', lot size=' + state.symbolLotUnits + ' units, min vol=' + state.symbolMinVolume + ', step=' + state.symbolStepVolume + '. Real orders now enabled.');
       }
