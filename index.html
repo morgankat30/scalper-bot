@@ -238,6 +238,10 @@
         <label>Take profit ($) — used when ATR is off</label>
         <input type="number" id="cfgTP" step="0.5" value="0.50">
       </div>
+      <div class="toggle-row">
+        <label>Flip on TP — immediately fire the opposite side the instant a TP closes</label>
+        <input type="checkbox" id="cfgFlipOnTP" style="width:auto;">
+      </div>
       <div class="field">
         <label>ATR period / SL multiplier / TP multiplier</label>
         <input type="number" id="cfgAtrPeriod" step="1" value="14" style="margin-bottom:4px;">
@@ -380,6 +384,18 @@ const state = {
   chartMarkers:[],
   paperBalance:null, paperPositions:[], paperHistory:[],
   pyramidLevel:1, pyramidDirection:null, batchCloseReasons:[], pyramidTargetForRound:1,
+  lastClosedPaperSide:null,
+  // New feature — Flip on TP, real-mode side: real EXECUTION_EVENT
+  // payloads aren't parsed for per-deal detail in this file (see the
+  // existing honest "approximate, real-mode" comment near RECONCILE_RES),
+  // so there's no clean TP-vs-SL signal for real fills the way paper mode
+  // has one. Best-effort instead: remember the side and the price we
+  // estimated as this order's TP the moment we send it, then when a
+  // position goes flat, compare the market price at that moment against
+  // the stored TP — close enough to it and it's almost certainly a TP,
+  // not a stop. Not perfect, but it never guesses without a stored
+  // reference, and it's clearly labeled as an estimate in the log.
+  lastRealSide:null, lastRealTpPrice:null,
 };
 
 const settings = {
@@ -391,6 +407,7 @@ const settings = {
   rsiExtremeEnabled:false, rsiOversold:15, rsiOverbought:85,
   structureEnabled:false, structureLookback:20,
   paperMode:true, maxOpenTrades:3,
+  flipOnTP:false, // new feature — see maybeFlipAfterTP() below
 };
 
 const paperLines = {}; // positionId -> {sl, tp} price line objects, for removing on close
@@ -442,6 +459,7 @@ function loadSavedSettings(){
   $('cfgAtrEnabled').checked = settings.atrEnabled;
   $('cfgSL').value = settings.stopLossDollars;
   $('cfgTP').value = settings.takeProfitDollars;
+  $('cfgFlipOnTP').checked = settings.flipOnTP;
   $('cfgAtrPeriod').value = settings.atrPeriod;
   $('cfgAtrSlMult').value = settings.atrSlMult;
   $('cfgAtrTpMult').value = settings.atrTpMult;
@@ -466,6 +484,7 @@ function saveSettingsFromForm(){
   settings.atrEnabled = $('cfgAtrEnabled').checked;
   settings.stopLossDollars = parseFloat($('cfgSL').value) || 5;
   settings.takeProfitDollars = parseFloat($('cfgTP').value) || 0.50;
+  settings.flipOnTP = $('cfgFlipOnTP').checked;
   settings.atrPeriod = Math.max(2, parseInt($('cfgAtrPeriod').value, 10) || 14);
   settings.atrSlMult = parseFloat($('cfgAtrSlMult').value) || 1.5;
   settings.atrTpMult = parseFloat($('cfgAtrTpMult').value) || 2.5;
@@ -708,11 +727,29 @@ function handleMessage(m){
       const wasOpen = state.positions.length > 0;
       state.positions = p.position || [];
       if(!settings.paperMode && wasOpen && state.positions.length === 0){
-        // Real-mode approximation: execution events don't cleanly tell us
-        // TP vs SL here yet, so we just advance on "went flat" rather than
-        // reset-on-loss like paper mode does. Less precise, flagged as such.
-        state.pyramidLevel = Math.min(state.pyramidLevel + 1, settings.maxOpenTrades);
-        log('Position count returned to 0 — next same-direction batch will open ' + state.pyramidLevel + ' (approximate, real-mode).');
+        // New feature — Flip on TP (real-mode side): best-effort guess at
+        // whether this close was a TP, using the price we estimated for it
+        // when the order was sent (see placeOrder()). "Close enough" is a
+        // tolerance of 20% of this symbol's own tick size — tight enough
+        // to not mistake a stop-loss for a take-profit, loose enough to
+        // allow for a market order not filling at the exact estimated
+        // entry price.
+        const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
+        const tick = Math.pow(10, -(state.symbolDigits || 5));
+        const looksLikeTp = settings.flipOnTP && price != null && state.lastRealTpPrice != null
+          && Math.abs(price - state.lastRealTpPrice) <= tick * 20;
+        if(looksLikeTp){
+          state.pyramidLevel = 1;
+          const flipSide = state.lastRealSide === 'buy' ? 'sell' : 'buy';
+          log('Flip on TP (real, estimated): position count returned to 0 near this batch\'s TP — firing ' + (flipSide==='buy'?'LONG':'SHORT') + ' the other way.');
+          placeOrder(flipSide);
+        } else {
+          // Real-mode approximation: execution events don't cleanly tell us
+          // TP vs SL here yet, so we just advance on "went flat" rather than
+          // reset-on-loss like paper mode does. Less precise, flagged as such.
+          state.pyramidLevel = Math.min(state.pyramidLevel + 1, settings.maxOpenTrades);
+          log('Position count returned to 0 — next same-direction batch will open ' + state.pyramidLevel + ' (approximate, real-mode).');
+        }
       }
       updateDashboard();
       break;
@@ -1261,8 +1298,19 @@ function placeOrder(signal){
   }
   const { slPrice, tpPrice } = getStopDistances(volume);
 
-  const relSL = Math.round(slPrice * 100000);
-  const relTP = Math.round(tpPrice * 100000);
+  // FIX ("still doesn't trade crypto on real accounts... Order error:
+  // INVALID_REQUEST: Relative stop loss has invalid precision"): this was
+  // hardcoded to a 5-decimal scale (*100000), which happens to be correct
+  // for EURUSD (digits=5) but is flat wrong for BTCUSD/ETHUSD (digits=2) —
+  // sending a value scaled for 5 decimal places on a symbol that only has
+  // 2 is exactly what the broker was rejecting. Paper mode never hit this
+  // because it never builds a real order payload at all, only real orders
+  // did — matching exactly what you saw (crypto worked in paper, never in
+  // real). Scaling by this symbol's own actual digits fixes every symbol
+  // at once, not just crypto.
+  const precisionScale = Math.pow(10, state.symbolDigits || 5);
+  const relSL = Math.round(slPrice * precisionScale);
+  const relTP = Math.round(tpPrice * precisionScale);
 
   const orderPayload = {
     ctidTraderAccountId: state.accountId, symbolId: state.symbolId,
@@ -1272,7 +1320,39 @@ function placeOrder(signal){
   if(relTP > 0) orderPayload.relativeTakeProfit = relTP;
   send(PT.NEW_ORDER_REQ, orderPayload);
 
-  log((signal==='buy'?'LONG':'SHORT')+' '+(volume/state.symbolLotUnits).toFixed(2)+' lots '+state.symbol+' — SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars+' (real order)');
+  // New feature — Flip on TP (real-mode side, best-effort — see the
+  // state.lastRealSide/lastRealTpPrice comment near the top of this file
+  // for why this is an estimate, not a certainty). Entry price isn't known
+  // yet for a market order, so this estimates it from the current
+  // bid/ask, same as the trade marker just below already does.
+  if(relTP > 0){
+    const estEntry = signal === 'buy' ? state.ask : state.bid;
+    if(estEntry){
+      state.lastRealSide = signal;
+      state.lastRealTpPrice = signal === 'buy' ? estEntry + tpPrice : estEntry - tpPrice;
+    }
+  } else {
+    state.lastRealSide = null;
+    state.lastRealTpPrice = null;
+  }
+
+  // FIX ("bot is always closing before even hitting my sl... it should
+  // respect my tp"): this always printed settings.stopLossDollars/
+  // takeProfitDollars — the numbers typed into the $ fields — even when
+  // "ATR-based stops" was the setting actually in effect (see
+  // getStopDistances() above: when settings.atrEnabled is true, slPrice/
+  // tpPrice come from ATR(14) x multiplier, completely independent of the
+  // dollar fields). Your own log shows ATR mode WAS on for this whole
+  // session ("Stops: ATR(14) x1.5/2.5", later x1.5/5, x0.5/5) — so every
+  // "SL $5 / TP $0.5" line was reporting a number that was never actually
+  // governing the trade. The real ATR-derived stop for BTC/ETH at 0.01
+  // lots landed around $0.4-0.5 of risk, which is exactly what closed —
+  // not a bug in when it closed, a bug in what the log claimed the stop
+  // was. Now it reports whichever one is actually driving the trade.
+  const stopLabel = settings.atrEnabled
+    ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
+    : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars;
+  log((signal==='buy'?'LONG':'SHORT')+' '+(volume/state.symbolLotUnits).toFixed(2)+' lots '+state.symbol+' — '+stopLabel+' (real order)');
   addTradeMarker(signal, signal==='buy'?state.ask:state.bid);
 }
 
@@ -1293,7 +1373,12 @@ function openPaperTrade(signal){
     tp: tpPrice > 0 ? (signal==='buy' ? entry + tpPrice : entry - tpPrice) : null,
   };
   state.paperPositions.push(pos);
-  log((signal==='buy'?'LONG':'SHORT')+' '+actualLots.toFixed(2)+' lots '+state.symbol+' @ '+entry.toFixed(5)+' — SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars+' (PAPER)');
+  // FIX: same mislabeled stop issue as placeOrder() above — see its
+  // comment. Reused here so paper mode's log matches reality too.
+  const stopLabelP = settings.atrEnabled
+    ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
+    : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars;
+  log((signal==='buy'?'LONG':'SHORT')+' '+actualLots.toFixed(2)+' lots '+state.symbol+' @ '+entry.toFixed(5)+' — '+stopLabelP+' (PAPER)');
 
   addTradeMarker(signal, entry);
   if(state.chartSeries){
@@ -1332,13 +1417,26 @@ function checkPaperPositions(){
     state.paperHistory.unshift({ side:pos.side, entry:pos.entry, exit, lots:pos.lots, pnl, reason, closedAt:Date.now() });
     if(state.paperHistory.length > 50) state.paperHistory.pop();
     state.batchCloseReasons.push(reason);
+    state.lastClosedPaperSide = pos.side; // used by Flip on TP below
     return false;
   });
   if(!state.paperPositions.length && state.batchCloseReasons.length){
     const allTp = state.batchCloseReasons.every(r => r === 'TP');
+    const closedSide = state.lastClosedPaperSide; // set in the filter loop above
     if(allTp){
-      state.pyramidLevel = Math.min(state.pyramidLevel + 1, settings.maxOpenTrades);
-      log('Full batch closed on TP — next same-direction batch will open ' + state.pyramidLevel + '.');
+      // New feature — Flip on TP: instead of scaling the same direction
+      // again, immediately fire the opposite side from here, at (near
+      // enough) the same price this batch just took profit at, since
+      // there's no delay between the close above and this firing.
+      if(settings.flipOnTP && closedSide){
+        state.pyramidLevel = 1;
+        const flipSide = closedSide === 'buy' ? 'sell' : 'buy';
+        log('Flip on TP: batch closed in profit — immediately firing ' + (flipSide==='buy'?'LONG':'SHORT') + ' the other way.');
+        openPaperTrade(flipSide);
+      } else {
+        state.pyramidLevel = Math.min(state.pyramidLevel + 1, settings.maxOpenTrades);
+        log('Full batch closed on TP — next same-direction batch will open ' + state.pyramidLevel + '.');
+      }
     } else {
       state.pyramidLevel = 1;
       log('Batch included a stop-loss — pyramid reset back to 1.');
