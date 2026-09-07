@@ -249,6 +249,28 @@
         <input type="number" id="cfgAtrTpMult" step="0.1" value="2.5">
       </div>
 
+      <div class="settings-section">Grid / Ladder scalping</div>
+      <div class="toggle-row">
+        <label>Enabled — stacks same-direction orders at sequential price levels as a move extends, so a pullback closes several small wins in fast succession (counter-trend ladder, like a grid). Replaces the strategies below while on.</label>
+        <input type="checkbox" id="cfgGridEnabled" style="width:auto;">
+      </div>
+      <div class="field">
+        <label>Grid step ($) — price move (in $ terms) before the next ladder rung opens</label>
+        <input type="number" id="cfgGridStep" step="0.5" value="2">
+      </div>
+      <div class="field">
+        <label>Grid take profit ($) — per rung, small and fast on purpose</label>
+        <input type="number" id="cfgGridTp" step="0.1" value="0.5">
+      </div>
+      <div class="field">
+        <label>Max rungs per ladder</label>
+        <input type="number" id="cfgGridMaxLevels" step="1" value="6">
+      </div>
+      <div class="field">
+        <label>Max combined floating loss before the whole ladder force-closes ($, 0 = off). A grid stacks MORE orders against an extending move, so if it never reverses, losses can build across every open rung — this is the safety net for that, since individual rungs deliberately don't carry a tight stop of their own.</label>
+        <input type="number" id="cfgGridMaxDD" step="1" value="15">
+      </div>
+
       <div class="settings-section">Speed</div>
       <div class="field">
         <label>Candle speed (seconds per strategy bar)</label>
@@ -309,7 +331,8 @@
       <div class="metric"><div class="label">Mode</div><div class="value" id="metEnv">—</div></div>
       <div class="metric"><div class="label">Balance</div><div class="value" id="metBalance">—</div></div>
       <div class="metric"><div class="label">Equity (bal + floating)</div><div class="value" id="metEquity">—</div></div>
-      <div class="metric"><div class="label">Floating P&L</div><div class="value" id="metPnl">—</div></div>
+      <div class="metric"><div class="label">Floating P&L (open trades only)</div><div class="value" id="metPnl">—</div></div>
+      <div class="metric"><div class="label">Session P&L (all closed trades)</div><div class="value" id="metSessionPnl">+0.00</div></div>
       <div class="metric"><div class="label">Open trades</div><div class="value" id="metTrades">0</div></div>
     </div>
 
@@ -396,6 +419,14 @@ const state = {
   // not a stop. Not perfect, but it never guesses without a stored
   // reference, and it's clearly labeled as an estimate in the log.
   lastRealSide:null, lastRealTpPrice:null,
+  // New feature — Grid/Ladder scalping. gridDirection: null (no ladder
+  // running) | 'sell' (stacking SELL rungs into a rally) | 'buy' (stacking
+  // BUY rungs into a decline). gridLastEntryPrice is the price the LAST
+  // rung opened at — the next rung only opens once price has moved another
+  // full gridStepDollars past it. gridPositionIds tracks which real
+  // positionIds belong to the current ladder (paper legs are tagged
+  // directly with isGrid:true instead, right on the position object).
+  gridDirection:null, gridLastEntryPrice:null, gridLevelsOpened:0, gridPositionIds:[],
 };
 
 const settings = {
@@ -408,6 +439,7 @@ const settings = {
   structureEnabled:false, structureLookback:20,
   paperMode:true, maxOpenTrades:3,
   flipOnTP:false, // new feature — see maybeFlipAfterTP() below
+  gridEnabled:false, gridStepDollars:2, gridTpDollars:0.5, gridMaxLevels:6, gridMaxDrawdown:15,
 };
 
 const paperLines = {}; // positionId -> {sl, tp} price line objects, for removing on close
@@ -460,6 +492,11 @@ function loadSavedSettings(){
   $('cfgSL').value = settings.stopLossDollars;
   $('cfgTP').value = settings.takeProfitDollars;
   $('cfgFlipOnTP').checked = settings.flipOnTP;
+  $('cfgGridEnabled').checked = settings.gridEnabled;
+  $('cfgGridStep').value = settings.gridStepDollars;
+  $('cfgGridTp').value = settings.gridTpDollars;
+  $('cfgGridMaxLevels').value = settings.gridMaxLevels;
+  $('cfgGridMaxDD').value = settings.gridMaxDrawdown;
   $('cfgAtrPeriod').value = settings.atrPeriod;
   $('cfgAtrSlMult').value = settings.atrSlMult;
   $('cfgAtrTpMult').value = settings.atrTpMult;
@@ -485,6 +522,11 @@ function saveSettingsFromForm(){
   settings.stopLossDollars = parseFloat($('cfgSL').value) || 5;
   settings.takeProfitDollars = parseFloat($('cfgTP').value) || 0.50;
   settings.flipOnTP = $('cfgFlipOnTP').checked;
+  settings.gridEnabled = $('cfgGridEnabled').checked;
+  settings.gridStepDollars = Math.max(0.1, parseFloat($('cfgGridStep').value) || 2);
+  settings.gridTpDollars = Math.max(0.05, parseFloat($('cfgGridTp').value) || 0.5);
+  settings.gridMaxLevels = Math.max(1, parseInt($('cfgGridMaxLevels').value, 10) || 6);
+  settings.gridMaxDrawdown = Math.max(0, parseFloat($('cfgGridMaxDD').value) || 0);
   settings.atrPeriod = Math.max(2, parseInt($('cfgAtrPeriod').value, 10) || 14);
   settings.atrSlMult = parseFloat($('cfgAtrSlMult').value) || 1.5;
   settings.atrTpMult = parseFloat($('cfgAtrTpMult').value) || 2.5;
@@ -728,6 +770,19 @@ function handleMessage(m){
       const oldPositions = state.positions;
       state.positions = p.position || [];
 
+      // New feature — Grid/Ladder: pick up any positionId that's new since
+      // the last reconcile while a ladder is currently running, so
+      // checkGridLadder()'s drawdown/close-tracking above knows which open
+      // positions actually belong to the grid.
+      if(!settings.paperMode && state.gridDirection){
+        const oldIds = new Set(oldPositions.map(x => x.positionId));
+        state.positions.forEach(pos => {
+          if(!oldIds.has(pos.positionId) && !state.gridPositionIds.includes(pos.positionId)){
+            state.gridPositionIds.push(pos.positionId);
+          }
+        });
+      }
+
       // FIX ("p&l is not recording when the bot closes the trade, it also
       // deletes yet it has to show how much profit/loss I've made"): a real
       // position closing just vanished from state.positions with nothing
@@ -759,7 +814,11 @@ function handleMessage(m){
         });
       }
 
-      if(!settings.paperMode && wasOpen && state.positions.length === 0){
+      // Grid mode manages its own ladder lifecycle entirely inside
+      // checkGridLadder() above — this pyramid/Flip-on-TP block is for the
+      // other three strategies and would only add confusing cross-talk
+      // (e.g. firing an extra non-grid flip trade) if both ran at once.
+      if(!settings.paperMode && !settings.gridEnabled && wasOpen && state.positions.length === 0){
         // New feature — Flip on TP (real-mode side): best-effort guess at
         // whether this close was a TP, using the price we estimated for it
         // when the order was sent (see placeOrder()). "Close enough" is a
@@ -1053,25 +1112,144 @@ function onSpot(p){
   updateChartLiveTick(mid);
   checkPaperPositions(); // TP/SL still watched every tick — only ENTRIES wait for a close
 
-  // FIX ("entering trades very early before the final direction starts to
-  // move... starts in loss for a long time"): this used to evaluate every
-  // strategy (confluence, RSI-extreme, structure break) on EVERY tick,
-  // against state.currentBar — the still-forming candle, not a closed one.
-  // A "structure break" could fire the instant a brief wick poked past a
-  // recent high/low, even if price snapped straight back the next tick —
-  // no confirmation the move actually held. That's exactly your
-  // screenshot: SHORT fired right as price ticked below a level, then
-  // chopped back up into a small loss. Now signals are only evaluated once
-  // a candle actually CLOSES, using its final, settled OHLC — a fake
-  // wick mid-candle can no longer trigger an entry, only a real, held
-  // break confirmed at candle close can. Exits (checkPaperPositions above)
-  // still react every tick, same as before — only entries wait.
+  // Grid/Ladder mode is price-distance driven, not pattern driven like the
+  // strategies below — it needs to react to raw price movement immediately
+  // to get anywhere near the speed in that video, so it runs every tick,
+  // not gated behind a candle close the way Confluence/RSI/Structure are.
+  // Adding one more same-direction rung as a move extends doesn't have the
+  // same "confirm it first" problem a reversal call does — each rung
+  // carries its own independent small TP regardless of whether that exact
+  // tick turns out to be noise.
+  if(settings.gridEnabled){
+    checkGridLadder();
+    return;
+  }
+
   if(barClosed){
     const signal = (settings.confluenceEnabled && generateSignal(state.bars))
       || (settings.rsiExtremeEnabled && generateRsiExtremeSignal(state.bars))
       || (settings.structureEnabled && generateStructureSignal(state.bars));
     if(signal) maybeTrade(signal);
   }
+}
+
+// New feature — Grid/Ladder scalping (the TikTok-style style you showed
+// me): stacks same-direction rungs at sequential price levels as a move
+// extends — SELL into a rally, BUY into a decline — so when price
+// eventually pulls back, each rung's own small TP closes in fast
+// succession, the "profit, profit, profit" cascade in your video. This is
+// deliberately a DIFFERENT trading style than Confluence/RSI/Structure
+// above (counter-trend, multiple simultaneous same-direction entries) —
+// it replaces them while it's on rather than running alongside them, so
+// the two philosophies never fight over the same position.
+function checkGridLadder(){
+  if(!settings.gridEnabled || !state.running) return;
+  const bal = settings.paperMode ? state.paperBalance : state.balance;
+  if(bal == null) return;
+  if(dailyLossHalted(bal)){
+    state.running = false;
+    state.lastError = 'Daily loss limit reached — bot auto-stopped.';
+    updateDashboard();
+    return;
+  }
+  if(!settings.paperMode && !state.symbolFullLoaded) return;
+  if(isForexWeekendClosure() && !isLikelyCrypto(state.symbol)) return;
+
+  const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
+  if(!price) return;
+
+  if(!settings.paperMode){
+    // Prune to positions that are still actually open, and pick up any
+    // that appeared since the last check while a ladder is running.
+    const liveIds = state.positions.map(p => p.positionId);
+    state.gridPositionIds = state.gridPositionIds.filter(id => liveIds.includes(id));
+  }
+  const openGridCount = settings.paperMode
+    ? state.paperPositions.filter(p => p.isGrid).length
+    : state.gridPositionIds.length;
+
+  // Safety net for the whole ladder — see the settings field's own
+  // description for why this exists: rungs deliberately don't carry a
+  // tight stop of their own, so this is what actually protects the
+  // account if the move just never reverses.
+  if(openGridCount > 0 && settings.gridMaxDrawdown > 0){
+    let floating = 0;
+    if(settings.paperMode){
+      state.paperPositions.filter(p => p.isGrid).forEach(p => {
+        const diff = p.side==='buy' ? (price-p.entry) : (p.entry-price);
+        floating += diff * dollarPerUnitFor(p.lots * state.symbolLotUnits);
+      });
+    } else {
+      state.positions.filter(pos => state.gridPositionIds.includes(pos.positionId)).forEach(pos => {
+        const td = pos.tradeData || {};
+        const side = td.tradeSide === 1 ? 'buy' : 'sell';
+        const entry = pos.price;
+        if(entry == null) return;
+        const diff = side==='buy' ? (price-entry) : (entry-price);
+        floating += diff * dollarPerUnitFor(td.volume || 0);
+      });
+    }
+    if(floating <= -settings.gridMaxDrawdown){
+      log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the whole ladder.');
+      if(settings.paperMode){
+        state.paperPositions.filter(p => p.isGrid).forEach(p => closePaperPosition(p.id));
+      } else {
+        state.gridPositionIds.slice().forEach(id => {
+          const pos = state.positions.find(x => x.positionId === id);
+          if(pos) closeRealPosition(pos.positionId, (pos.tradeData||{}).volume || 0);
+        });
+      }
+      state.gridDirection = null; state.gridLastEntryPrice = null; state.gridLevelsOpened = 0; state.gridPositionIds = [];
+      return;
+    }
+  }
+
+  // Every rung from this ladder has closed out on its own (each hit its
+  // own small TP) — reset so a fresh ladder can start from wherever the
+  // trend is by the next tick.
+  if(state.gridDirection && openGridCount === 0 && state.gridLevelsOpened > 0){
+    log('Grid ladder fully closed out.');
+    state.gridDirection = null; state.gridLastEntryPrice = null; state.gridLevelsOpened = 0; state.gridPositionIds = [];
+  }
+
+  const volumeForStep = roundVolumeToStep(computeLots());
+  if(volumeForStep == null) return;
+  const dpu = dollarPerUnitFor(volumeForStep);
+  if(!dpu) return;
+  const stepPrice = settings.gridStepDollars / dpu;
+  const tpPrice = settings.gridTpDollars / dpu;
+  // Deliberately wide — this is a backstop only, not the ladder's real
+  // protection (gridMaxDrawdown above is).
+  const slPrice = stepPrice * settings.gridMaxLevels * 2;
+
+  if(!state.gridDirection){
+    if(state.bars.length < 22) return; // not enough bars yet for a trend read
+    const closes = state.bars.map(b => b.c);
+    const e9 = ema(closes, 9), e21 = ema(closes, 21);
+    const trendUp = e9[e9.length-1] > e21[e21.length-1];
+    state.gridDirection = trendUp ? 'sell' : 'buy';
+    state.gridLastEntryPrice = price;
+    state.gridLevelsOpened = 1;
+    log('Grid: starting a ' + (state.gridDirection==='sell'?'SELL':'BUY') + ' ladder (rung 1) — trend is currently ' + (trendUp?'up':'down') + '.');
+    fireGridRung(state.gridDirection, { slPrice, tpPrice });
+    return;
+  }
+
+  if(state.gridLevelsOpened >= settings.gridMaxLevels) return; // full ladder — just wait for rungs to close
+
+  const movedEnough = state.gridDirection === 'sell'
+    ? price >= state.gridLastEntryPrice + stepPrice
+    : price <= state.gridLastEntryPrice - stepPrice;
+  if(movedEnough){
+    state.gridLevelsOpened++;
+    state.gridLastEntryPrice = price;
+    log('Grid: rung ' + state.gridLevelsOpened + ' — price moved another $' + settings.gridStepDollars + ' further, adding another ' + (state.gridDirection==='sell'?'SELL':'BUY') + '.');
+    fireGridRung(state.gridDirection, { slPrice, tpPrice });
+  }
+}
+function fireGridRung(side, stops){
+  if(settings.paperMode) openPaperTrade(side, stops);
+  else placeOrder(side, stops);
 }
 
 function pushToBars(price){
@@ -1337,14 +1515,14 @@ function computeLots(){
   return (state.symbolMinVolume || 1000) / (state.symbolLotUnits || 100000);
 }
 
-function placeOrder(signal){
+function placeOrder(signal, overrideStops){
   const lots = computeLots();
   const volume = roundVolumeToStep(lots);
   if(volume == null){
     log('Refused to trade ' + state.symbol + ': broker min/step volume data looks wrong for this symbol (would produce an absurd lot size). Skipping — try a different symbol or check its min volume in the cTrader app.');
     return;
   }
-  const { slPrice, tpPrice } = getStopDistances(volume);
+  const { slPrice, tpPrice } = overrideStops || getStopDistances(volume);
 
   // FIX (this broke Gold too after my last "fix" — sorry, that one was
   // wrong): cTrader's wire protocol always scales prices by 100000
@@ -1402,21 +1580,23 @@ function placeOrder(signal){
   // lots landed around $0.4-0.5 of risk, which is exactly what closed —
   // not a bug in when it closed, a bug in what the log claimed the stop
   // was. Now it reports whichever one is actually driving the trade.
-  const stopLabel = settings.atrEnabled
-    ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
-    : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars;
+  const stopLabel = overrideStops
+    ? 'grid rung, TP $'+settings.gridTpDollars
+    : (settings.atrEnabled
+        ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
+        : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars);
   log((signal==='buy'?'LONG':'SHORT')+' '+(volume/state.symbolLotUnits).toFixed(2)+' lots '+state.symbol+' — '+stopLabel+' (real order)');
   addTradeMarker(signal, signal==='buy'?state.ask:state.bid);
 }
 
-function openPaperTrade(signal){
+function openPaperTrade(signal, overrideStops){
   const lots = computeLots();
   const volume = roundVolumeToStep(lots);
   if(volume == null){
     log('Refused to trade ' + state.symbol + ': broker min/step volume data looks wrong for this symbol (would produce an absurd lot size). Skipping.');
     return;
   }
-  const { slPrice, tpPrice } = getStopDistances(volume);
+  const { slPrice, tpPrice } = overrideStops || getStopDistances(volume);
   const entry = signal === 'buy' ? state.ask : state.bid;
   if(!entry) return;
   const actualLots = volume / state.symbolLotUnits;
@@ -1424,13 +1604,16 @@ function openPaperTrade(signal){
     id: 'p'+Date.now(), side: signal, entry, lots: actualLots,
     sl: signal==='buy' ? entry - slPrice : entry + slPrice,
     tp: tpPrice > 0 ? (signal==='buy' ? entry + tpPrice : entry - tpPrice) : null,
+    isGrid: !!overrideStops,
   };
   state.paperPositions.push(pos);
   // FIX: same mislabeled stop issue as placeOrder() above — see its
   // comment. Reused here so paper mode's log matches reality too.
-  const stopLabelP = settings.atrEnabled
-    ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
-    : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars;
+  const stopLabelP = overrideStops
+    ? 'grid rung, TP $'+settings.gridTpDollars
+    : (settings.atrEnabled
+        ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
+        : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars);
   log((signal==='buy'?'LONG':'SHORT')+' '+actualLots.toFixed(2)+' lots '+state.symbol+' @ '+entry.toFixed(5)+' — '+stopLabelP+' (PAPER)');
 
   addTradeMarker(signal, entry);
@@ -1663,6 +1846,22 @@ function updateDashboard(){
   const pnlEl = $('metPnl');
   pnlEl.textContent = (floatingPnl>=0?'+':'') + floatingPnl.toFixed(2) + ' (est.)';
   pnlEl.style.color = floatingPnl >= 0 ? 'var(--ok)' : 'var(--danger)';
+  // FIX ("bot is deleting the profit/loss on p&l... i should always be able
+  // to see how much the bot made or lost"): "Floating P&L" above is — and
+  // should stay — unrealized P&L on whatever's open RIGHT NOW, so it
+  // correctly shows +0.00 the instant every position closes. That's not a
+  // bug, but with nothing else on screen tracking closed trades, it looks
+  // exactly like your money vanished each time a trade closed. This is the
+  // number that was actually missing: a running total of every closed
+  // trade this session (from the same list the History tab's "Total" line
+  // already reads from), always visible, that only ever grows with each
+  // new close and only resets on an actual page refresh — never mid-session.
+  const sessionEl = $('metSessionPnl');
+  if(sessionEl){
+    const sessionPnl = state.paperHistory.reduce((sum,h) => sum + h.pnl, 0);
+    sessionEl.textContent = (sessionPnl>=0?'+':'') + sessionPnl.toFixed(2);
+    sessionEl.style.color = sessionPnl >= 0 ? 'var(--ok)' : 'var(--danger)';
+  }
   $('metTrades').textContent = settings.paperMode ? state.paperPositions.length : state.positions.length;
   $('stopIcon').textContent = state.running ? '⏸' : '▶';
   $('stopLabel').textContent = state.running ? 'Stop' : 'Start';
