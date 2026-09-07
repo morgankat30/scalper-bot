@@ -725,7 +725,40 @@ function handleMessage(m){
 
     case PT.RECONCILE_RES: {
       const wasOpen = state.positions.length > 0;
+      const oldPositions = state.positions;
       state.positions = p.position || [];
+
+      // FIX ("p&l is not recording when the bot closes the trade, it also
+      // deletes yet it has to show how much profit/loss I've made"): a real
+      // position closing just vanished from state.positions with nothing
+      // ever recorded anywhere — the History tab was hardcoded to show
+      // "Real-trade history isn't parsed here yet" no matter what. This
+      // finds whichever position(s) dropped out of the list since the last
+      // reconcile and logs each one into the same history list paper mode
+      // already uses, so it actually shows up with a P&L instead of
+      // disappearing with no trace. There's no per-deal execution detail
+      // available here (see the Flip-on-TP comment above for why), so the
+      // exit price is estimated from the current market price at the
+      // moment the close is noticed — labeled "(real, est.)" so it's never
+      // confused with paper mode's exact numbers.
+      if(!settings.paperMode && oldPositions.length){
+        const stillOpenIds = new Set(state.positions.map(x => x.positionId));
+        const closedNow = oldPositions.filter(x => !stillOpenIds.has(x.positionId));
+        const marketPrice = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
+        closedNow.forEach(pos => {
+          const td = pos.tradeData || {};
+          const side = td.tradeSide === 1 ? 'buy' : 'sell';
+          const entry = pos.price;
+          const vol = td.volume || 0;
+          if(entry == null || !marketPrice || !vol) return; // not enough data to estimate — skip rather than log a wrong number
+          const priceDiff = side === 'buy' ? (marketPrice - entry) : (entry - marketPrice);
+          const pnl = priceDiff * dollarPerUnitFor(vol);
+          state.paperHistory.unshift({ side, entry, exit: marketPrice, lots: (vol/state.symbolLotUnits).toFixed(2), pnl, reason: 'real, est.', closedAt: Date.now() });
+          if(state.paperHistory.length > 50) state.paperHistory.pop();
+          log((side==='buy'?'LONG':'SHORT')+' '+state.symbol+' closed — PnL '+(pnl>=0?'+':'')+pnl.toFixed(2)+' (real, estimated)');
+        });
+      }
+
       if(!settings.paperMode && wasOpen && state.positions.length === 0){
         // New feature — Flip on TP (real-mode side): best-effort guess at
         // whether this close was a TP, using the price we estimated for it
@@ -1313,19 +1346,24 @@ function placeOrder(signal){
   }
   const { slPrice, tpPrice } = getStopDistances(volume);
 
-  // FIX ("still doesn't trade crypto on real accounts... Order error:
-  // INVALID_REQUEST: Relative stop loss has invalid precision"): this was
-  // hardcoded to a 5-decimal scale (*100000), which happens to be correct
-  // for EURUSD (digits=5) but is flat wrong for BTCUSD/ETHUSD (digits=2) —
-  // sending a value scaled for 5 decimal places on a symbol that only has
-  // 2 is exactly what the broker was rejecting. Paper mode never hit this
-  // because it never builds a real order payload at all, only real orders
-  // did — matching exactly what you saw (crypto worked in paper, never in
-  // real). Scaling by this symbol's own actual digits fixes every symbol
-  // at once, not just crypto.
-  const precisionScale = Math.pow(10, state.symbolDigits || 5);
-  const relSL = Math.round(slPrice * precisionScale);
-  const relTP = Math.round(tpPrice * precisionScale);
+  // FIX (this broke Gold too after my last "fix" — sorry, that one was
+  // wrong): cTrader's wire protocol always scales prices by 100000
+  // for every symbol — "digits" is only how many decimals to DISPLAY, not
+  // the actual scale of the relativeStopLoss/relativeTakeProfit integers.
+  // Reverted that part back to the universal *100000 EURUSD always used.
+  // The REAL cause of "invalid precision": the broker requires that value
+  // to land exactly on one of this symbol's own valid ticks. EURUSD has
+  // digits=5, so its smallest tick is 0.00001 — every integer at the
+  // *100000 scale already is a valid tick, so a stop-dollar-derived
+  // distance like 0.03217 never had a problem. XAUUSD/BTCUSD/ETHUSD have
+  // digits=2 — their smallest tick is 0.01, which is 1000 raw units at
+  // this scale — so any relativeStopLoss that isn't a clean multiple of
+  // 1000 (like a distance derived from an odd dollar amount ÷ price) gets
+  // rejected as "invalid precision". Rounding to the nearest valid tick
+  // for THIS symbol fixes every symbol, forex included, at once.
+  const tickUnits = Math.pow(10, 5 - (state.symbolDigits != null ? state.symbolDigits : 5));
+  const relSL = Math.round(slPrice * 100000 / tickUnits) * tickUnits;
+  const relTP = Math.round(tpPrice * 100000 / tickUnits) * tickUnits;
 
   const orderPayload = {
     ctidTraderAccountId: state.accountId, symbolId: state.symbolId,
@@ -1559,12 +1597,14 @@ $('tabHistory').addEventListener('click', () => {
 });
 function renderHistory(){
   const box = $('historyList');
-  if(!settings.paperMode){
-    box.innerHTML = '<div style="color:var(--text-mid); font-size:12px; text-align:center; padding:6px;">Real-trade history isn\'t parsed here yet — check cTrader\'s own History tab for full detail.</div>';
-    return;
-  }
+  // FIX: this used to hardcode a "not parsed here yet" placeholder for
+  // real mode no matter what — now that real closes actually get recorded
+  // into state.paperHistory too (see RECONCILE_RES above), both modes
+  // render from the same list.
   if(!state.paperHistory.length){ box.innerHTML = '<div style="color:var(--text-mid); font-size:12px; text-align:center; padding:6px;">No closed trades yet.</div>'; return; }
-  box.innerHTML = state.paperHistory.map(h => {
+  const total = state.paperHistory.reduce((sum,h) => sum + h.pnl, 0);
+  box.innerHTML = '<div style="text-align:right; font-size:12px; color:var(--text-mid); margin-bottom:4px;">Total: <b style="color:' + (total>=0?'var(--success)':'var(--danger)') + ';">' + (total>=0?'+':'') + total.toFixed(2) + '</b></div>' +
+    state.paperHistory.map(h => {
     return '<div class="pos-row">' +
       '<span class="side ' + (h.side==='buy'?'long':'short') + '">' + (h.side==='buy'?'LONG':'SHORT') + '</span>' +
       '<span class="info">' + state.symbol + ' · ' + h.lots + ' lots<br>' + h.entry.toFixed(5) + ' → ' + h.exit.toFixed(5) + ' (' + h.reason + ')</span>' +
