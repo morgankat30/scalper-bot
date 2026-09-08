@@ -549,7 +549,11 @@ function saveSettingsFromForm(){
   settings.structureEnabled = $('cfgStructure').checked;
   settings.structureLookback = Math.max(5, parseInt($('cfgStructureLookback').value, 10) || 20);
   localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  // FIX (couldn't even tell from your log which system was actually
+  // running): this summary line never mentioned Grid mode at all, on or
+  // off — a real diagnostic gap. Now it's in here explicitly.
   log('Settings saved. Paper mode: ' + (settings.paperMode ? 'ON' : 'OFF')
+    + ' | Grid: ' + (settings.gridEnabled ? ('ON (batch level '+state.gridBatchLevel+')') : 'off')
     + ' | Confluence:' + (settings.confluenceEnabled?'on':'off')
     + ' RSI-extreme:' + (settings.rsiExtremeEnabled?'on':'off')
     + ' Structure:' + (settings.structureEnabled?'on':'off')
@@ -1271,23 +1275,30 @@ function detectReversalPattern(bars){
   // an ordinary down-continuation candle in a real trend can easily have a
   // slightly longer wick and superficially "look like" a hammer without
   // any of the selling actually being exhausted yet. A shape by itself
-  // isn't confirmation of anything. Now a pattern only counts if RSI is
-  // ALSO genuinely in an extreme zone at that exact candle — oversold for
-  // a bullish reversal, overbought for a bearish one — using the same
-  // oversold/overbought levels Strategy 2 already uses, so "reversal" now
-  // requires real exhaustion showing up in the data, not just a candle
-  // shape that happened to resemble one mid-trend.
+  // isn't confirmation of anything.
+  // FIX ("missing good trades... 20 minutes, nothing happened"): the first
+  // version of this required RSI to be extreme on the EXACT SAME candle as
+  // the pattern — but a real reversal usually shows RSI going extreme
+  // first, then a confirming candle forms a bar or two later once RSI has
+  // already started curling back — requiring both on one exact candle is
+  // a rare coincidence, not how reversals actually play out, and it was
+  // starving the bot of entries on real setups like the one in your
+  // screenshot (RSI genuinely at 15, sustained downtrend, but no signal).
+  // Now it checks whether RSI touched the extreme zone at any point in the
+  // last 5 closed candles — still requires genuine exhaustion actually
+  // happened recently, just not on the identical bar as the pattern.
   const rsiVals = rsi(closes, settings.rsiPeriod);
-  const rsiNow = rsiVals[rsiVals.length-1];
-  if(rsiNow == null) return null;
+  const recentRsi = rsiVals.slice(-5);
+  const wasOversold = recentRsi.some(v => v != null && v <= settings.rsiOversold);
+  const wasOverbought = recentRsi.some(v => v != null && v >= settings.rsiOverbought);
 
   const bearishEngulfing = isBull(c1) && isBear(c2) && c2.o >= c1.c && c2.c <= c1.o;
   const shootingStar = upperWick(c2) > body(c2)*2 && lowerWick(c2) < body(c2) && body(c2) < range(c2)*0.35;
   const bullishEngulfing = isBear(c1) && isBull(c2) && c2.o <= c1.c && c2.c >= c1.o;
   const hammer = lowerWick(c2) > body(c2)*2 && upperWick(c2) < body(c2) && body(c2) < range(c2)*0.35;
 
-  if(upTrend && (bearishEngulfing || shootingStar) && rsiNow >= settings.rsiOverbought) return { side: 'sell', trendWas: 'up' };
-  if(!upTrend && (bullishEngulfing || hammer) && rsiNow <= settings.rsiOversold) return { side: 'buy', trendWas: 'down' };
+  if(upTrend && (bearishEngulfing || shootingStar) && wasOverbought) return { side: 'sell', trendWas: 'up' };
+  if(!upTrend && (bullishEngulfing || hammer) && wasOversold) return { side: 'buy', trendWas: 'down' };
   return null;
 }
 
