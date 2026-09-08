@@ -276,6 +276,10 @@
         <label>Max open trades at once (blocks new signals past this)</label>
         <input type="number" id="cfgMaxTrades" step="1" value="3">
       </div>
+      <div class="field">
+        <label>Commission per 1.0 lot, round turn ($) — check cTrader's own account/symbol spec for your real rate; every P&L estimate below subtracts this so it matches the broker's real number instead of just raw price movement</label>
+        <input type="number" id="cfgCommission" step="0.01" value="0">
+      </div>
 
       <div class="settings-section">Strategy 1 — EMA/RSI/Bollinger confluence</div>
       <div class="toggle-row">
@@ -418,7 +422,10 @@ const state = {
   // win at max level; a drawdown-triggered stop resets it to 1 too).
   // gridPositionIds tracks which real positionIds belong to it (paper legs
   // are tagged directly with isGrid:true instead, right on the position object).
-  gridBatchOpen:false, gridBatchLevel:1, gridPositionIds:[],
+  gridBatchOpen:false, gridBatchConfirmed:false, gridBatchLevel:1, gridPositionIds:[],
+  // New feature — dynamic lot sizing. Set once, the first time each
+  // balance is ever known this session — see computeLots()'s own comment.
+  lotScaleBaseBalance:null, lotScaleBasePaper:null,
 };
 
 const settings = {
@@ -432,6 +439,16 @@ const settings = {
   paperMode:true, maxOpenTrades:3,
   flipOnTP:false, // new feature — see maybeFlipAfterTP() below
   gridEnabled:false, gridMaxLevels:6, gridMaxDrawdown:15,
+  // FIX ("bot showing another amount, broker showing another amount" —
+  // still, after the bid/ask and staleness fixes): the remaining gap in
+  // your screenshots stayed roughly the same size ($0.08-0.09) no matter
+  // how big the floating P&L itself grew — a gap that doesn't scale with
+  // price movement is the signature of a flat per-trade COMMISSION your
+  // broker charges, which this app never subtracted at all, not a pricing
+  // bug. I don't know your account's actual commission rate — set it here
+  // (check cTrader's own account/spec page for it) and every P&L estimate
+  // below will subtract it, same as the broker actually does.
+  commissionPerLot:0,
 };
 
 const paperLines = {}; // positionId -> {sl, tp} price line objects, for removing on close
@@ -493,6 +510,7 @@ function loadSavedSettings(){
   $('cfgTf').value = settings.timeframeSeconds;
   $('cfgCooldown').value = settings.cooldownSeconds;
   $('cfgMaxTrades').value = settings.maxOpenTrades;
+  $('cfgCommission').value = settings.commissionPerLot;
   $('cfgConfluenceEnabled').checked = settings.confluenceEnabled;
   $('cfgRsiPeriod').value = settings.rsiPeriod;
   $('cfgConfluence').value = String(settings.confluenceRequired);
@@ -521,6 +539,7 @@ function saveSettingsFromForm(){
   settings.timeframeSeconds = Math.max(1, parseInt($('cfgTf').value, 10) || 15);
   settings.cooldownSeconds = Math.max(1, parseInt($('cfgCooldown').value, 10) || 5);
   settings.maxOpenTrades = Math.max(1, parseInt($('cfgMaxTrades').value, 10) || 3);
+  settings.commissionPerLot = Math.max(0, parseFloat($('cfgCommission').value) || 0);
   settings.confluenceEnabled = $('cfgConfluenceEnabled').checked;
   settings.rsiPeriod = Math.max(2, parseInt($('cfgRsiPeriod').value, 10) || 6);
   settings.confluenceRequired = parseInt($('cfgConfluence').value, 10) === 3 ? 3 : 2;
@@ -669,6 +688,12 @@ function handleMessage(m){
         state.balance = brokerBalance;
       }
       if(state.paperBalance == null && state.balance != null) state.paperBalance = state.balance;
+      // New feature — dynamic lot sizing: remember the balance the FIRST
+      // time it's ever known, so lot size scaling below has a fixed point
+      // to measure real growth from, not a number that shifts every time
+      // the account is re-checked.
+      if(state.lotScaleBaseBalance == null && state.balance != null) state.lotScaleBaseBalance = state.balance;
+      if(state.lotScaleBasePaper == null && state.paperBalance != null) state.lotScaleBasePaper = state.paperBalance;
       updateDashboard();
       break;
     }
@@ -878,6 +903,8 @@ function switchSymbol(symbolId, symbolName){
   state.chartBars = [];
   state.chartCurrentBar = null;
   state.chartMarkers = [];
+  Object.values(state.priceLines || {}).forEach(line => { try{ state.chartSeries.removePriceLine(line); }catch(e){} });
+  state.priceLines = {};
 
   send(PT.SUBSCRIBE_SPOTS_REQ, { ctidTraderAccountId: state.accountId, symbolId: [symbolId] });
   log('Subscribed to ' + state.symbol + '.');
@@ -1068,33 +1095,72 @@ function updateChartLiveTick(price){
 }
 
 function addTradeMarker(signal, price, tag){
-  const barTime = state.chartCurrentBar ? state.chartCurrentBar.time : Math.floor(Date.now()/1000);
-  // FIX (arrows overlapping into unreadable stacked text like
-  // "SHSHORTSHORT", and sitting outside the candles instead of inside):
-  // this used to stamp Date.now()/1000 — the exact current second — onto
-  // every marker, but the chart's own candles are bucketed into much wider
-  // windows. Several markers landing within the same real candle each got
-  // a slightly different raw second, so the chart still snapped all of
-  // them onto the SAME visual bar, drawing them directly on top of each
-  // other. Now the marker's time matches the actual bar bucket exactly,
-  // and if an entry marker already exists on this exact bar, this replaces
-  // it instead of stacking a second one — and position:'inBar' puts it
-  // right on the candle instead of floating above/below it.
-  const text = tag || (signal==='buy'?'LONG':'SHORT');
-  const marker = {
-    time: barTime,
-    position: 'inBar',
-    color: signal==='buy' ? '#16a34a' : '#dc2626',
-    shape: signal==='buy' ? 'arrowUp' : 'arrowDown',
-    text,
-    isEntry: true,
-  };
-  const existingIdx = state.chartMarkers.findIndex(m => m.time === barTime && m.isEntry);
-  if(existingIdx >= 0) state.chartMarkers[existingIdx] = marker;
-  else state.chartMarkers.push(marker);
-  if(state.chartMarkers.length > 100) state.chartMarkers.shift();
-  state.chartMarkers.sort((a,b) => a.time - b.time); // lightweight-charts requires markers sorted by time
-  if(state.chartSeries) state.chartSeries.setMarkers(state.chartMarkers);
+  // REPLACED (per your request — "no arrows, no LONG/SHORT, exactly like
+  // the grid video you sent"): that video shows a dashed horizontal price
+  // line at each open position's entry level, labeled with its side, size,
+  // and live floating $ — not an arrow with LONG/SHORT text stamped on the
+  // candle. syncPriceLines() below now does that instead, driven straight
+  // off the actual open positions every tick, so this function is no
+  // longer needed — kept as a harmless no-op so nothing that still calls
+  // it breaks.
+}
+
+// New — draws one dashed price line per open position, right on the
+// chart, at its real entry price, exactly like the reference video:
+// side + lots + live floating $, colored green in profit / red in loss,
+// updating every tick, removed automatically the moment that position
+// closes.
+function syncPriceLines(){
+  if(!state.chartSeries) return;
+  if(!state.priceLines) state.priceLines = {};
+  const seen = new Set();
+
+  function upsert(id, side, entry, lots, pnl){
+    seen.add(id);
+    const title = (side==='buy'?'BUY':'SELL') + ' ' + lots.toFixed(2) + '  ' + (pnl>=0?'+':'') + pnl.toFixed(2) + ' USD';
+    const color = pnl >= 0 ? '#16a34a' : '#dc2626';
+    const existing = state.priceLines[id];
+    if(existing){
+      try{
+        existing.applyOptions({ price: entry, title, color });
+        return;
+      }catch(e){ /* line handle went stale — fall through and recreate */ }
+    }
+    try{
+      state.priceLines[id] = state.chartSeries.createPriceLine({
+        price: entry, color, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true, title,
+      });
+    }catch(e){}
+  }
+
+  if(settings.paperMode){
+    state.paperPositions.forEach(pos => {
+      const price = valuationPriceFor(pos.side);
+      const priceDiff = price ? (pos.side==='buy' ? (price-pos.entry) : (pos.entry-price)) : 0;
+      const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits) - settings.commissionPerLot * pos.lots;
+      upsert(pos.id, pos.side, pos.entry, pos.lots, pnl);
+    });
+  } else {
+    state.positions.forEach(pos => {
+      const td = pos.tradeData || {};
+      const side = td.tradeSide === 1 ? 'buy' : 'sell';
+      const entry = pos.price;
+      if(entry == null) return;
+      const lots = (td.volume || 0) / state.symbolLotUnits;
+      const price = valuationPriceFor(side);
+      const priceDiff = price ? (side==='buy' ? (price-entry) : (entry-price)) : 0;
+      const pnl = priceDiff * dollarPerUnitFor(td.volume || 0) - settings.commissionPerLot * lots;
+      upsert(pos.positionId, side, entry, lots, pnl);
+    });
+  }
+
+  Object.keys(state.priceLines).forEach(id => {
+    if(!seen.has(id)){
+      try{ state.chartSeries.removePriceLine(state.priceLines[id]); }catch(e){}
+      delete state.priceLines[id];
+    }
+  });
 }
 function addExitMarker(text, color){
   const marker = { time: Math.floor(Date.now()/1000), position:'inBar', color, shape:'circle', text };
@@ -1132,6 +1198,7 @@ function onSpot(p){
   // only, not the primary driver anymore.
   renderPositions();
   updateDashboard();
+  syncPriceLines(); // per-position price lines on the chart itself — see its own comment
 
   // Grid/Ladder mode is price-distance driven, not pattern driven like the
   // strategies below — it needs to react to raw price movement immediately
@@ -1172,7 +1239,11 @@ function onSpot(p){
 //     stops firing the instant a rally starts and instead waits for real
 //     signs the rally is actually running out of steam.
 function gridBatchTarget(level){
-  return 0.5 * Math.pow(2, level - 1); // 1->0.5, 2->1, 3->2, 4->4, 5->8, 6->16
+  // FIX (per your latest message — this was doubling before: 0.5, 1, 2, 4,
+  // 8, 16 — wrong): each position's own base TP is always $0.50, and the
+  // batch target is just that added up across however many are open right
+  // now — level x $0.50. 1->0.50, 2->1.00, 3->1.50, 4->2.00, 5->2.50, 6->3.00.
+  return level * 0.5;
 }
 
 // "Professional candle pattern" reversal check — engulfing and pin-bar
@@ -1192,13 +1263,31 @@ function detectReversalPattern(bars){
   const e9 = ema(closes, 9), e21 = ema(closes, 21);
   const upTrend = e9[e9.length-1] > e21[e21.length-1];
 
+  // FIX ("the market was selling but the bot was buying... it should be
+  // real live data signal not just guessing work"): your screenshot showed
+  // it exactly — three LONG entries fired one after another while price
+  // just kept falling and RSI kept sliding toward oversold, not away from
+  // it. The candle-shape checks alone (hammer/engulfing) were too loose —
+  // an ordinary down-continuation candle in a real trend can easily have a
+  // slightly longer wick and superficially "look like" a hammer without
+  // any of the selling actually being exhausted yet. A shape by itself
+  // isn't confirmation of anything. Now a pattern only counts if RSI is
+  // ALSO genuinely in an extreme zone at that exact candle — oversold for
+  // a bullish reversal, overbought for a bearish one — using the same
+  // oversold/overbought levels Strategy 2 already uses, so "reversal" now
+  // requires real exhaustion showing up in the data, not just a candle
+  // shape that happened to resemble one mid-trend.
+  const rsiVals = rsi(closes, settings.rsiPeriod);
+  const rsiNow = rsiVals[rsiVals.length-1];
+  if(rsiNow == null) return null;
+
   const bearishEngulfing = isBull(c1) && isBear(c2) && c2.o >= c1.c && c2.c <= c1.o;
   const shootingStar = upperWick(c2) > body(c2)*2 && lowerWick(c2) < body(c2) && body(c2) < range(c2)*0.35;
   const bullishEngulfing = isBear(c1) && isBull(c2) && c2.o <= c1.c && c2.c >= c1.o;
   const hammer = lowerWick(c2) > body(c2)*2 && upperWick(c2) < body(c2) && body(c2) < range(c2)*0.35;
 
-  if(upTrend && (bearishEngulfing || shootingStar)) return { side: 'sell', trendWas: 'up' };
-  if(!upTrend && (bullishEngulfing || hammer)) return { side: 'buy', trendWas: 'down' };
+  if(upTrend && (bearishEngulfing || shootingStar) && rsiNow >= settings.rsiOverbought) return { side: 'sell', trendWas: 'up' };
+  if(!upTrend && (bullishEngulfing || hammer) && rsiNow <= settings.rsiOversold) return { side: 'buy', trendWas: 'down' };
   return null;
 }
 
@@ -1213,7 +1302,7 @@ function gridFloatingPnl(){
     state.paperPositions.filter(p => p.isGrid).forEach(p => {
       const price = valuationPriceFor(p.side);
       const diff = p.side==='buy' ? (price-p.entry) : (p.entry-price);
-      floating += diff * dollarPerUnitFor(p.lots * state.symbolLotUnits);
+      floating += diff * dollarPerUnitFor(p.lots * state.symbolLotUnits) - settings.commissionPerLot * p.lots;
     });
   } else {
     state.positions.filter(pos => state.gridPositionIds.includes(pos.positionId)).forEach(pos => {
@@ -1223,7 +1312,8 @@ function gridFloatingPnl(){
       if(entry == null) return;
       const price = valuationPriceFor(side);
       const diff = side==='buy' ? (price-entry) : (entry-price);
-      floating += diff * dollarPerUnitFor(td.volume || 0);
+      const lots = (td.volume || 0) / state.symbolLotUnits;
+      floating += diff * dollarPerUnitFor(td.volume || 0) - settings.commissionPerLot * lots;
     });
   }
   return floating;
@@ -1238,6 +1328,7 @@ function closeGridBatch(){
     });
   }
   state.gridBatchOpen = false;
+  state.gridBatchConfirmed = false;
   state.gridPositionIds = [];
 }
 
@@ -1250,18 +1341,39 @@ function checkGridBatchExit(){
     const liveIds = state.positions.map(p => p.positionId);
     state.gridPositionIds = state.gridPositionIds.filter(id => liveIds.includes(id));
   }
-  if(gridOpenCount() === 0){
-    // Batch's positions vanished some other way (e.g. a backstop SL fired
-    // directly, or a manual close) rather than through the shared-target/
-    // drawdown paths below — treat it conservatively as a loss, same as
-    // the drawdown path does, rather than silently keeping the level as
-    // if nothing happened.
-    log('Grid batch closed outside the normal exit path (manual close or a backstop stop) — resetting to level 1.');
+  const openNow = gridOpenCount();
+  // FIX (the actual cause of "opening trades of different directions at
+  // once"): a real order isn't confirmed the instant it's sent — it only
+  // shows up in gridPositionIds once RECONCILE_RES reports it back, which
+  // can take a real second or more. This used to treat "zero confirmed
+  // positions" as "the batch must have closed", resetting gridBatchOpen
+  // back to false and gridBatchLevel to 1 — while the order was still in
+  // flight. That let checkGridBatchEntry() fire an entirely NEW batch,
+  // sometimes in the opposite direction, before the first one had even
+  // been confirmed — exactly the simultaneous LONG+SHORT in your
+  // screenshots. Now it only ever treats "back to zero" as a real closure
+  // AFTER it has actually seen this batch's positions confirmed open at
+  // least once (state.gridBatchConfirmed) — before that, zero just means
+  // "still waiting on the broker", so it does nothing and waits.
+  if(openNow > 0) state.gridBatchConfirmed = true;
+  if(openNow === 0){
+    if(!state.gridBatchConfirmed) return; // still waiting on the broker to confirm — not a closure
+    log('Grid batch closed outside the normal exit path (manual close or a stop) — resetting to level 1.');
     state.gridBatchOpen = false;
+    state.gridBatchConfirmed = false;
     state.gridPositionIds = [];
     state.gridBatchLevel = 1;
     return;
   }
+  // FIX (per your latest message): back to each position carrying its own
+  // real $0.50 take-profit (settings-independent — this grid TP is always
+  // $0.50, the "base" you described), AND the whole batch is watched
+  // together so it closes as ONE clean batch the moment the combined
+  // floating total reaches the batch's target, instead of each leg
+  // trickling closed one at a time on its own. Target scales with batch
+  // size: level 1 -> $0.50, level 2 -> $1.00, level 3 -> $1.50, etc — the
+  // more positions open, the higher the combined target, exactly "the
+  // more the positions, the higher the tp in floating p&l".
   const floating = gridFloatingPnl();
   const target = gridBatchTarget(state.gridBatchLevel);
   if(floating >= target){
@@ -1299,24 +1411,30 @@ function checkGridBatchEntry(barClosed){
   if(volumeForStep == null) return;
   const dpu = dollarPerUnitFor(volumeForStep);
   if(!dpu) return;
-  // FIX (per your request): no individual TP — the whole batch still
-  // shares ONE exit, handled entirely by checkGridBatchExit() above. But
-  // SL is back to being real and per-position, same as every other
-  // strategy (settings.stopLossDollars) — each position in the batch can
-  // hit its own actual stop independently, exactly like before grid mode
-  // existed. gridMaxDrawdown above still watches the whole batch's
-  // combined floating loss as an additional net on top of that, not
-  // instead of it.
+  // FIX (per your latest message — this was 0 before): each leg carries
+  // its own real $0.50 take-profit again — "the main base tp of all
+  // positions is 0.50" — sent straight to the broker like any other real
+  // TP, so it's a genuine safety net even if this app's own monitoring
+  // ever lags. SL is real and per-position too (settings.stopLossDollars),
+  // same as every other strategy. checkGridBatchExit() above still
+  // actively watches the combined floating total against the batch's own
+  // scaled target (level x $0.50) and closes everything together the
+  // moment THAT'S reached — which normally lands at basically the same
+  // time all the individual $0.50s would anyway, since every leg in a
+  // batch opens at nearly the same price. gridMaxDrawdown is the extra net
+  // on top for when it goes the other way.
   const slPrice = settings.stopLossDollars / dpu;
-  const stops = { slPrice, tpPrice: 0 };
+  const tpPrice = 0.5 / dpu;
+  const stops = { slPrice, tpPrice };
 
   const level = state.gridBatchLevel;
-  log('Grid: ' + (pattern.side==='sell'?'bearish':'bullish') + ' reversal pattern confirmed against the ' + pattern.trendWas + 'trend — opening level ' + level + ' (' + level + (level===1?' position':' positions') + ') ' + (pattern.side==='sell'?'SHORT':'LONG') + ', target +$' + gridBatchTarget(level).toFixed(2) + '.');
+  log('Grid: ' + (pattern.side==='sell'?'bearish':'bullish') + ' reversal pattern confirmed against the ' + pattern.trendWas + 'trend — opening level ' + level + ' (' + level + (level===1?' position':' positions') + ') ' + (pattern.side==='sell'?'SHORT':'LONG') + ', each with its own $0.50 TP, batch target +$' + gridBatchTarget(level).toFixed(2) + '.');
   for(let i = 0; i < level; i++){
     if(settings.paperMode) openPaperTrade(pattern.side, stops);
     else placeOrder(pattern.side, stops);
   }
   state.gridBatchOpen = true;
+  state.gridBatchConfirmed = false; // reset — see checkGridBatchExit()'s fix note on why this matters
   // One clean marker for the whole batch instead of one per leg — see
   // addTradeMarker()'s own fix note for why this matters.
   addTradeMarker(pattern.side, null, (pattern.side==='sell'?'SHORT':'LONG') + (level>1?' x'+level:''));
@@ -1592,12 +1710,29 @@ function maybeTrade(signal){
   state.lastSignalAt = Date.now();
 }
 function computeLots(){
-  if(settings.fixedLotSize) return settings.fixedLotSize;
   // No lot size typed in: fall back to the broker's own minimum rather than
   // a pip-based guess — dollar-based SL/TP below no longer depends on lots
   // to determine risk (the dollar amount lost on a stop is fixed by design),
-  // so there's no strong reason to size up automatically here anymore.
-  return (state.symbolMinVolume || 1000) / (state.symbolLotUnits || 100000);
+  // so there's no strong reason to size up automatically here otherwise.
+  const base = settings.fixedLotSize || ((state.symbolMinVolume || 1000) / (state.symbolLotUnits || 100000));
+  // New feature ("add the lot size once the bot makes $50 and above"):
+  // measures profit as current balance minus the balance the FIRST time it
+  // was ever known this session (state.lotScaleBaseBalance /
+  // lotScaleBasePaper, set once in TRADER_RES). Every full $50 of that
+  // growth adds 0.01 to the base lot size — $50 profit -> 0.02 (if base is
+  // 0.01), $100 -> 0.03, and so on. Resets to the base size at the start
+  // of each new session (a page reload), same as Session P&L already does,
+  // since there's nowhere persistent to remember it across sessions.
+  const bal = settings.paperMode ? state.paperBalance : state.balance;
+  const startBal = settings.paperMode ? state.lotScaleBasePaper : state.lotScaleBaseBalance;
+  if(bal != null && startBal != null){
+    const profit = bal - startBal;
+    if(profit >= 50){
+      const steps = Math.floor(profit / 50);
+      return Math.round((base + steps * 0.01) * 100) / 100;
+    }
+  }
+  return base;
 }
 
 function placeOrder(signal, overrideStops){
@@ -1812,7 +1947,7 @@ function renderPositions(){
     box.innerHTML = state.paperPositions.map(pos => {
       const price = valuationPriceFor(pos.side);
       const priceDiff = price ? (pos.side==='buy' ? (price-pos.entry) : (pos.entry-price)) : 0;
-      const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
+      const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits) - settings.commissionPerLot * pos.lots;
       return '<div class="pos-row">' +
         '<span class="side ' + (pos.side==='buy'?'long':'short') + '">' + (pos.side==='buy'?'LONG':'SHORT') + '</span>' +
         '<span class="info">' + state.symbol + ' · ' + pos.lots.toFixed(2) + ' lots<br>entry ' + pos.entry.toFixed(5) + '</span>' +
@@ -1830,7 +1965,7 @@ function renderPositions(){
       const vol = (td.volume || 0) / state.symbolLotUnits;
       const price = valuationPriceFor(side);
       const priceDiff = price && entry ? (side==='buy' ? (price-entry) : (entry-price)) : 0;
-      const pnl = priceDiff * dollarPerUnitFor(td.volume || 0);
+      const pnl = priceDiff * dollarPerUnitFor(td.volume || 0) - settings.commissionPerLot * vol;
       return '<div class="pos-row">' +
         '<span class="side ' + (side==='buy'?'long':'short') + '">' + (side==='buy'?'LONG':'SHORT') + '</span>' +
         '<span class="info">' + state.symbol + ' · ' + vol.toFixed(2) + ' lots<br>entry ' + (entry!=null?entry.toFixed(5):'—') + '</span>' +
@@ -1908,7 +2043,7 @@ function computeFloatingPnl(){
     return state.paperPositions.reduce((sum,pos) => {
       const price = valuationPriceFor(pos.side);
       const priceDiff = pos.side==='buy' ? (price-pos.entry) : (pos.entry-price);
-      return sum + priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
+      return sum + priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits) - settings.commissionPerLot * pos.lots;
     }, 0);
   }
   return state.positions.reduce((sum,pos) => {
@@ -1918,7 +2053,8 @@ function computeFloatingPnl(){
     if(entry == null) return sum;
     const price = valuationPriceFor(side);
     const priceDiff = side==='buy' ? (price-entry) : (entry-price);
-    return sum + priceDiff * dollarPerUnitFor(td.volume || 0);
+    const lots = (td.volume || 0) / state.symbolLotUnits;
+    return sum + priceDiff * dollarPerUnitFor(td.volume || 0) - settings.commissionPerLot * lots;
   }, 0);
 }
 
