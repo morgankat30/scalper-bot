@@ -249,25 +249,17 @@
         <input type="number" id="cfgAtrTpMult" step="0.1" value="2.5">
       </div>
 
-      <div class="settings-section">Grid / Ladder scalping</div>
+      <div class="settings-section">Grid / Ladder scalping (batch pyramid)</div>
       <div class="toggle-row">
-        <label>Enabled — stacks same-direction orders at sequential price levels as a move extends, so a pullback closes several small wins in fast succession (counter-trend ladder, like a grid). Replaces the strategies below while on.</label>
+        <label>Enabled — starts with 1 position on a confirmed candlestick reversal pattern, closes the whole batch together once its shared floating-P&L target is hit (level 1 = $0.50, doubling each level: $1, $2, $4, $8, $16), then opens one position bigger next round, up to 6 before looping back to 1. Replaces the strategies below while on.</label>
         <input type="checkbox" id="cfgGridEnabled" style="width:auto;">
       </div>
       <div class="field">
-        <label>Grid step ($) — price move (in $ terms) before the next ladder rung opens</label>
-        <input type="number" id="cfgGridStep" step="0.5" value="2">
-      </div>
-      <div class="field">
-        <label>Grid take profit ($) — per rung, small and fast on purpose</label>
-        <input type="number" id="cfgGridTp" step="0.1" value="0.5">
-      </div>
-      <div class="field">
-        <label>Max rungs per ladder</label>
+        <label>Max batch size (levels before looping back to 1)</label>
         <input type="number" id="cfgGridMaxLevels" step="1" value="6">
       </div>
       <div class="field">
-        <label>Max combined floating loss before the whole ladder force-closes ($, 0 = off). A grid stacks MORE orders against an extending move, so if it never reverses, losses can build across every open rung — this is the safety net for that, since individual rungs deliberately don't carry a tight stop of their own.</label>
+        <label>Max combined floating loss before the whole batch force-closes ($, 0 = off) — a bigger batch risks more per round as it climbs toward level 6, so this is the real protection if a reversal call turns out wrong; hitting it resets back to level 1 rather than advancing.</label>
         <input type="number" id="cfgGridMaxDD" step="1" value="15">
       </div>
 
@@ -419,14 +411,14 @@ const state = {
   // not a stop. Not perfect, but it never guesses without a stored
   // reference, and it's clearly labeled as an estimate in the log.
   lastRealSide:null, lastRealTpPrice:null,
-  // New feature — Grid/Ladder scalping. gridDirection: null (no ladder
-  // running) | 'sell' (stacking SELL rungs into a rally) | 'buy' (stacking
-  // BUY rungs into a decline). gridLastEntryPrice is the price the LAST
-  // rung opened at — the next rung only opens once price has moved another
-  // full gridStepDollars past it. gridPositionIds tracks which real
-  // positionIds belong to the current ladder (paper legs are tagged
-  // directly with isGrid:true instead, right on the position object).
-  gridDirection:null, gridLastEntryPrice:null, gridLevelsOpened:0, gridPositionIds:[],
+  // New feature — Grid/Ladder scalping (batch/pyramid style). gridBatchOpen:
+  // is the current batch (of gridBatchLevel positions) still open right
+  // now? gridBatchLevel is the batch SIZE for the round currently open or
+  // about to open next (1 through gridMaxLevels, looping back to 1 after a
+  // win at max level; a drawdown-triggered stop resets it to 1 too).
+  // gridPositionIds tracks which real positionIds belong to it (paper legs
+  // are tagged directly with isGrid:true instead, right on the position object).
+  gridBatchOpen:false, gridBatchLevel:1, gridPositionIds:[],
 };
 
 const settings = {
@@ -439,7 +431,7 @@ const settings = {
   structureEnabled:false, structureLookback:20,
   paperMode:true, maxOpenTrades:3,
   flipOnTP:false, // new feature — see maybeFlipAfterTP() below
-  gridEnabled:false, gridStepDollars:2, gridTpDollars:0.5, gridMaxLevels:6, gridMaxDrawdown:15,
+  gridEnabled:false, gridMaxLevels:6, gridMaxDrawdown:15,
 };
 
 const paperLines = {}; // positionId -> {sl, tp} price line objects, for removing on close
@@ -493,8 +485,6 @@ function loadSavedSettings(){
   $('cfgTP').value = settings.takeProfitDollars;
   $('cfgFlipOnTP').checked = settings.flipOnTP;
   $('cfgGridEnabled').checked = settings.gridEnabled;
-  $('cfgGridStep').value = settings.gridStepDollars;
-  $('cfgGridTp').value = settings.gridTpDollars;
   $('cfgGridMaxLevels').value = settings.gridMaxLevels;
   $('cfgGridMaxDD').value = settings.gridMaxDrawdown;
   $('cfgAtrPeriod').value = settings.atrPeriod;
@@ -523,8 +513,6 @@ function saveSettingsFromForm(){
   settings.takeProfitDollars = parseFloat($('cfgTP').value) || 0.50;
   settings.flipOnTP = $('cfgFlipOnTP').checked;
   settings.gridEnabled = $('cfgGridEnabled').checked;
-  settings.gridStepDollars = Math.max(0.1, parseFloat($('cfgGridStep').value) || 2);
-  settings.gridTpDollars = Math.max(0.05, parseFloat($('cfgGridTp').value) || 0.5);
   settings.gridMaxLevels = Math.max(1, parseInt($('cfgGridMaxLevels').value, 10) || 6);
   settings.gridMaxDrawdown = Math.max(0, parseFloat($('cfgGridMaxDD').value) || 0);
   settings.atrPeriod = Math.max(2, parseInt($('cfgAtrPeriod').value, 10) || 14);
@@ -772,9 +760,9 @@ function handleMessage(m){
 
       // New feature — Grid/Ladder: pick up any positionId that's new since
       // the last reconcile while a ladder is currently running, so
-      // checkGridLadder()'s drawdown/close-tracking above knows which open
+      // checkGridBatchExit()'s drawdown/close-tracking above knows which open
       // positions actually belong to the grid.
-      if(!settings.paperMode && state.gridDirection){
+      if(!settings.paperMode && state.gridBatchOpen){
         const oldIds = new Set(oldPositions.map(x => x.positionId));
         state.positions.forEach(pos => {
           if(!oldIds.has(pos.positionId) && !state.gridPositionIds.includes(pos.positionId)){
@@ -815,7 +803,7 @@ function handleMessage(m){
       }
 
       // Grid mode manages its own ladder lifecycle entirely inside
-      // checkGridLadder() above — this pyramid/Flip-on-TP block is for the
+      // checkGridBatchExit() above — this pyramid/Flip-on-TP block is for the
       // other three strategies and would only add confusing cross-talk
       // (e.g. firing an extra non-grid flip trade) if both ran at once.
       if(!settings.paperMode && !settings.gridEnabled && wasOpen && state.positions.length === 0){
@@ -1080,15 +1068,32 @@ function updateChartLiveTick(price){
 }
 
 function addTradeMarker(signal, price, tag){
+  const barTime = state.chartCurrentBar ? state.chartCurrentBar.time : Math.floor(Date.now()/1000);
+  // FIX (arrows overlapping into unreadable stacked text like
+  // "SHSHORTSHORT", and sitting outside the candles instead of inside):
+  // this used to stamp Date.now()/1000 — the exact current second — onto
+  // every marker, but the chart's own candles are bucketed into much wider
+  // windows. Several markers landing within the same real candle each got
+  // a slightly different raw second, so the chart still snapped all of
+  // them onto the SAME visual bar, drawing them directly on top of each
+  // other. Now the marker's time matches the actual bar bucket exactly,
+  // and if an entry marker already exists on this exact bar, this replaces
+  // it instead of stacking a second one — and position:'inBar' puts it
+  // right on the candle instead of floating above/below it.
+  const text = tag || (signal==='buy'?'LONG':'SHORT');
   const marker = {
-    time: Math.floor(Date.now()/1000),
-    position: signal==='buy' ? 'belowBar' : 'aboveBar',
+    time: barTime,
+    position: 'inBar',
     color: signal==='buy' ? '#16a34a' : '#dc2626',
     shape: signal==='buy' ? 'arrowUp' : 'arrowDown',
-    text: (tag || (signal==='buy'?'LONG':'SHORT')),
+    text,
+    isEntry: true,
   };
-  state.chartMarkers.push(marker);
+  const existingIdx = state.chartMarkers.findIndex(m => m.time === barTime && m.isEntry);
+  if(existingIdx >= 0) state.chartMarkers[existingIdx] = marker;
+  else state.chartMarkers.push(marker);
   if(state.chartMarkers.length > 100) state.chartMarkers.shift();
+  state.chartMarkers.sort((a,b) => a.time - b.time); // lightweight-charts requires markers sorted by time
   if(state.chartSeries) state.chartSeries.setMarkers(state.chartMarkers);
 }
 function addExitMarker(text, color){
@@ -1112,6 +1117,22 @@ function onSpot(p){
   updateChartLiveTick(mid);
   checkPaperPositions(); // TP/SL still watched every tick — only ENTRIES wait for a close
 
+  // FIX ("the bot is showing another amount and the broker is showing
+  // another amount... there's always a gap between candle movement and
+  // the price on open trades, yet these are supposed to move at once"):
+  // found it — renderPositions() and updateDashboard() were ONLY ever
+  // called from a fixed 3-SECOND setInterval, completely disconnected
+  // from the live price feed. The chart above updates on every single
+  // tick (updateChartLiveTick), but the P&L you were looking at could be
+  // up to 3 real seconds stale at any given moment — on a fast-moving
+  // symbol like gold, 3 seconds is easily $0.10-0.30+ of real price
+  // movement, which is exactly the size of gap you were seeing next to
+  // cTrader's own live numbers. Now both refresh on every tick, same as
+  // the chart — the 3s intervals stay below as a lightweight fallback
+  // only, not the primary driver anymore.
+  renderPositions();
+  updateDashboard();
+
   // Grid/Ladder mode is price-distance driven, not pattern driven like the
   // strategies below — it needs to react to raw price movement immediately
   // to get anywhere near the speed in that video, so it runs every tick,
@@ -1121,7 +1142,8 @@ function onSpot(p){
   // carries its own independent small TP regardless of whether that exact
   // tick turns out to be noise.
   if(settings.gridEnabled){
-    checkGridLadder();
+    checkGridBatchExit();      // every tick — react to the shared target/drawdown as fast as price moves
+    checkGridBatchEntry(barClosed); // only acts on a confirmed candle close
     return;
   }
 
@@ -1133,17 +1155,132 @@ function onSpot(p){
   }
 }
 
-// New feature — Grid/Ladder scalping (the TikTok-style style you showed
-// me): stacks same-direction rungs at sequential price levels as a move
-// extends — SELL into a rally, BUY into a decline — so when price
-// eventually pulls back, each rung's own small TP closes in fast
-// succession, the "profit, profit, profit" cascade in your video. This is
-// deliberately a DIFFERENT trading style than Confluence/RSI/Structure
-// above (counter-trend, multiple simultaneous same-direction entries) —
-// it replaces them while it's on rather than running alongside them, so
-// the two philosophies never fight over the same position.
-function checkGridLadder(){
-  if(!settings.gridEnabled || !state.running) return;
+// REBUILT per your spec — this is now a batch/pyramid system, not a
+// price-step ladder:
+//   - Starts with exactly 1 position, never jumps straight to 6.
+//   - A whole batch shares ONE combined floating-P&L target — level 1
+//     needs +$0.50, level 2 needs +$1, level 3 needs +$2, doubling each
+//     time up to level 6 — and closes ALL of that batch's positions
+//     together the instant the combined total reaches it, not each
+//     position chasing its own separate $0.50.
+//   - After a winning batch, the next one opens one size bigger (signal-
+//     dependent direction, can flip). After 6, it loops back to 1. A
+//     drawdown-triggered stop resets back to 1 instead of advancing.
+//   - Entries now require an actual candlestick reversal pattern
+//     (engulfing / pin bar) AGAINST the prevailing EMA trend, confirmed on
+//     a closed candle — not just "EMA9 is above EMA21 right now" — so it
+//     stops firing the instant a rally starts and instead waits for real
+//     signs the rally is actually running out of steam.
+function gridBatchTarget(level){
+  return 0.5 * Math.pow(2, level - 1); // 1->0.5, 2->1, 3->2, 4->4, 5->8, 6->16
+}
+
+// "Professional candle pattern" reversal check — engulfing and pin-bar
+// (hammer / shooting star) patterns, only counted when they appear AGAINST
+// the prevailing EMA9/EMA21 trend, since a reversal pattern only means
+// anything in the context of the move it's supposedly reversing.
+function detectReversalPattern(bars){
+  if(bars.length < 22) return null;
+  const c2 = bars[bars.length-1], c1 = bars[bars.length-2];
+  const body = b => Math.abs(b.c - b.o);
+  const range = b => (b.h - b.l) || 1e-9;
+  const upperWick = b => b.h - Math.max(b.o, b.c);
+  const lowerWick = b => Math.min(b.o, b.c) - b.l;
+  const isBull = b => b.c > b.o, isBear = b => b.c < b.o;
+
+  const closes = bars.map(b => b.c);
+  const e9 = ema(closes, 9), e21 = ema(closes, 21);
+  const upTrend = e9[e9.length-1] > e21[e21.length-1];
+
+  const bearishEngulfing = isBull(c1) && isBear(c2) && c2.o >= c1.c && c2.c <= c1.o;
+  const shootingStar = upperWick(c2) > body(c2)*2 && lowerWick(c2) < body(c2) && body(c2) < range(c2)*0.35;
+  const bullishEngulfing = isBear(c1) && isBull(c2) && c2.o <= c1.c && c2.c >= c1.o;
+  const hammer = lowerWick(c2) > body(c2)*2 && upperWick(c2) < body(c2) && body(c2) < range(c2)*0.35;
+
+  if(upTrend && (bearishEngulfing || shootingStar)) return { side: 'sell', trendWas: 'up' };
+  if(!upTrend && (bullishEngulfing || hammer)) return { side: 'buy', trendWas: 'down' };
+  return null;
+}
+
+function gridOpenCount(){
+  return settings.paperMode
+    ? state.paperPositions.filter(p => p.isGrid).length
+    : state.gridPositionIds.length;
+}
+function gridFloatingPnl(){
+  let floating = 0;
+  if(settings.paperMode){
+    state.paperPositions.filter(p => p.isGrid).forEach(p => {
+      const price = valuationPriceFor(p.side);
+      const diff = p.side==='buy' ? (price-p.entry) : (p.entry-price);
+      floating += diff * dollarPerUnitFor(p.lots * state.symbolLotUnits);
+    });
+  } else {
+    state.positions.filter(pos => state.gridPositionIds.includes(pos.positionId)).forEach(pos => {
+      const td = pos.tradeData || {};
+      const side = td.tradeSide === 1 ? 'buy' : 'sell';
+      const entry = pos.price;
+      if(entry == null) return;
+      const price = valuationPriceFor(side);
+      const diff = side==='buy' ? (price-entry) : (entry-price);
+      floating += diff * dollarPerUnitFor(td.volume || 0);
+    });
+  }
+  return floating;
+}
+function closeGridBatch(){
+  if(settings.paperMode){
+    state.paperPositions.filter(p => p.isGrid).forEach(p => closePaperPosition(p.id));
+  } else {
+    state.gridPositionIds.slice().forEach(id => {
+      const pos = state.positions.find(x => x.positionId === id);
+      if(pos) closeRealPosition(pos.positionId, (pos.tradeData||{}).volume || 0);
+    });
+  }
+  state.gridBatchOpen = false;
+  state.gridPositionIds = [];
+}
+
+// Runs every tick — watching an already-open batch for its shared target
+// or the drawdown safety net needs to react as fast as price does, same
+// reasoning as checkPaperPositions() for the other strategies.
+function checkGridBatchExit(){
+  if(!settings.gridEnabled || !state.running || !state.gridBatchOpen) return;
+  if(!settings.paperMode){
+    const liveIds = state.positions.map(p => p.positionId);
+    state.gridPositionIds = state.gridPositionIds.filter(id => liveIds.includes(id));
+  }
+  if(gridOpenCount() === 0){
+    // Batch's positions vanished some other way (e.g. a backstop SL fired
+    // directly, or a manual close) rather than through the shared-target/
+    // drawdown paths below — treat it conservatively as a loss, same as
+    // the drawdown path does, rather than silently keeping the level as
+    // if nothing happened.
+    log('Grid batch closed outside the normal exit path (manual close or a backstop stop) — resetting to level 1.');
+    state.gridBatchOpen = false;
+    state.gridPositionIds = [];
+    state.gridBatchLevel = 1;
+    return;
+  }
+  const floating = gridFloatingPnl();
+  const target = gridBatchTarget(state.gridBatchLevel);
+  if(floating >= target){
+    log('Grid batch level ' + state.gridBatchLevel + ' (' + state.gridBatchLevel + (state.gridBatchLevel===1?' position':' positions') + ') hit its target (+' + floating.toFixed(2) + ' >= $' + target.toFixed(2) + ') — closing all together.');
+    closeGridBatch();
+    state.gridBatchLevel = state.gridBatchLevel >= settings.gridMaxLevels ? 1 : state.gridBatchLevel + 1;
+  } else if(settings.gridMaxDrawdown > 0 && floating <= -settings.gridMaxDrawdown){
+    log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the batch and resetting to level 1.');
+    closeGridBatch();
+    state.gridBatchLevel = 1;
+  }
+}
+
+// Only acts on a CLOSED candle (barClosed) — a candlestick pattern is
+// defined by a bar's final OHLC, so it can't mean anything mid-candle;
+// evaluating it on a still-forming bar would just reintroduce the exact
+// "entering before the reversal is confirmed" problem from before.
+function checkGridBatchEntry(barClosed){
+  if(!settings.gridEnabled || !state.running || state.gridBatchOpen || !barClosed) return;
   const bal = settings.paperMode ? state.paperBalance : state.balance;
   if(bal == null) return;
   if(dailyLossHalted(bal)){
@@ -1155,101 +1292,34 @@ function checkGridLadder(){
   if(!settings.paperMode && !state.symbolFullLoaded) return;
   if(isForexWeekendClosure() && !isLikelyCrypto(state.symbol)) return;
 
-  const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
-  if(!price) return;
-
-  if(!settings.paperMode){
-    // Prune to positions that are still actually open, and pick up any
-    // that appeared since the last check while a ladder is running.
-    const liveIds = state.positions.map(p => p.positionId);
-    state.gridPositionIds = state.gridPositionIds.filter(id => liveIds.includes(id));
-  }
-  const openGridCount = settings.paperMode
-    ? state.paperPositions.filter(p => p.isGrid).length
-    : state.gridPositionIds.length;
-
-  // Safety net for the whole ladder — see the settings field's own
-  // description for why this exists: rungs deliberately don't carry a
-  // tight stop of their own, so this is what actually protects the
-  // account if the move just never reverses.
-  if(openGridCount > 0 && settings.gridMaxDrawdown > 0){
-    let floating = 0;
-    if(settings.paperMode){
-      state.paperPositions.filter(p => p.isGrid).forEach(p => {
-        const diff = p.side==='buy' ? (price-p.entry) : (p.entry-price);
-        floating += diff * dollarPerUnitFor(p.lots * state.symbolLotUnits);
-      });
-    } else {
-      state.positions.filter(pos => state.gridPositionIds.includes(pos.positionId)).forEach(pos => {
-        const td = pos.tradeData || {};
-        const side = td.tradeSide === 1 ? 'buy' : 'sell';
-        const entry = pos.price;
-        if(entry == null) return;
-        const diff = side==='buy' ? (price-entry) : (entry-price);
-        floating += diff * dollarPerUnitFor(td.volume || 0);
-      });
-    }
-    if(floating <= -settings.gridMaxDrawdown){
-      log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the whole ladder.');
-      if(settings.paperMode){
-        state.paperPositions.filter(p => p.isGrid).forEach(p => closePaperPosition(p.id));
-      } else {
-        state.gridPositionIds.slice().forEach(id => {
-          const pos = state.positions.find(x => x.positionId === id);
-          if(pos) closeRealPosition(pos.positionId, (pos.tradeData||{}).volume || 0);
-        });
-      }
-      state.gridDirection = null; state.gridLastEntryPrice = null; state.gridLevelsOpened = 0; state.gridPositionIds = [];
-      return;
-    }
-  }
-
-  // Every rung from this ladder has closed out on its own (each hit its
-  // own small TP) — reset so a fresh ladder can start from wherever the
-  // trend is by the next tick.
-  if(state.gridDirection && openGridCount === 0 && state.gridLevelsOpened > 0){
-    log('Grid ladder fully closed out.');
-    state.gridDirection = null; state.gridLastEntryPrice = null; state.gridLevelsOpened = 0; state.gridPositionIds = [];
-  }
+  const pattern = detectReversalPattern(state.bars);
+  if(!pattern) return;
 
   const volumeForStep = roundVolumeToStep(computeLots());
   if(volumeForStep == null) return;
   const dpu = dollarPerUnitFor(volumeForStep);
   if(!dpu) return;
-  const stepPrice = settings.gridStepDollars / dpu;
-  const tpPrice = settings.gridTpDollars / dpu;
-  // Deliberately wide — this is a backstop only, not the ladder's real
-  // protection (gridMaxDrawdown above is).
-  const slPrice = stepPrice * settings.gridMaxLevels * 2;
+  // FIX (per your request): no individual TP — the whole batch still
+  // shares ONE exit, handled entirely by checkGridBatchExit() above. But
+  // SL is back to being real and per-position, same as every other
+  // strategy (settings.stopLossDollars) — each position in the batch can
+  // hit its own actual stop independently, exactly like before grid mode
+  // existed. gridMaxDrawdown above still watches the whole batch's
+  // combined floating loss as an additional net on top of that, not
+  // instead of it.
+  const slPrice = settings.stopLossDollars / dpu;
+  const stops = { slPrice, tpPrice: 0 };
 
-  if(!state.gridDirection){
-    if(state.bars.length < 22) return; // not enough bars yet for a trend read
-    const closes = state.bars.map(b => b.c);
-    const e9 = ema(closes, 9), e21 = ema(closes, 21);
-    const trendUp = e9[e9.length-1] > e21[e21.length-1];
-    state.gridDirection = trendUp ? 'sell' : 'buy';
-    state.gridLastEntryPrice = price;
-    state.gridLevelsOpened = 1;
-    log('Grid: starting a ' + (state.gridDirection==='sell'?'SELL':'BUY') + ' ladder (rung 1) — trend is currently ' + (trendUp?'up':'down') + '.');
-    fireGridRung(state.gridDirection, { slPrice, tpPrice });
-    return;
+  const level = state.gridBatchLevel;
+  log('Grid: ' + (pattern.side==='sell'?'bearish':'bullish') + ' reversal pattern confirmed against the ' + pattern.trendWas + 'trend — opening level ' + level + ' (' + level + (level===1?' position':' positions') + ') ' + (pattern.side==='sell'?'SHORT':'LONG') + ', target +$' + gridBatchTarget(level).toFixed(2) + '.');
+  for(let i = 0; i < level; i++){
+    if(settings.paperMode) openPaperTrade(pattern.side, stops);
+    else placeOrder(pattern.side, stops);
   }
-
-  if(state.gridLevelsOpened >= settings.gridMaxLevels) return; // full ladder — just wait for rungs to close
-
-  const movedEnough = state.gridDirection === 'sell'
-    ? price >= state.gridLastEntryPrice + stepPrice
-    : price <= state.gridLastEntryPrice - stepPrice;
-  if(movedEnough){
-    state.gridLevelsOpened++;
-    state.gridLastEntryPrice = price;
-    log('Grid: rung ' + state.gridLevelsOpened + ' — price moved another $' + settings.gridStepDollars + ' further, adding another ' + (state.gridDirection==='sell'?'SELL':'BUY') + '.');
-    fireGridRung(state.gridDirection, { slPrice, tpPrice });
-  }
-}
-function fireGridRung(side, stops){
-  if(settings.paperMode) openPaperTrade(side, stops);
-  else placeOrder(side, stops);
+  state.gridBatchOpen = true;
+  // One clean marker for the whole batch instead of one per leg — see
+  // addTradeMarker()'s own fix note for why this matters.
+  addTradeMarker(pattern.side, null, (pattern.side==='sell'?'SHORT':'LONG') + (level>1?' x'+level:''));
 }
 
 function pushToBars(price){
@@ -1402,6 +1472,21 @@ function dollarPerUnitFor(volumeInBrokerUnits){
     return base / state.bid; // USD is the BASE currency for these three — P&L accrues in the quote currency
   }
   return base; // correct as-is for USD-quoted pairs (EURUSD, GBPUSD, XAUUSD, etc.)
+}
+
+// FIX ("the bot showing another amount and the broker showing another
+// amount"): a second real contributor to the gap, on top of the 3-second
+// staleness fixed in onSpot() above. Every P&L estimate here used the flat
+// mid price — (bid+ask)/2 — for both directions. But closing a LONG means
+// SELLING, which fills at the BID, and closing a SHORT means BUYING BACK,
+// which fills at the ASK. Using mid for both means every estimate was off
+// by roughly half the spread, in a direction that happened to make SHORTS
+// look more profitable than they really were and LONGS look less
+// profitable — exactly the pattern in your screenshots. This is still
+// only an estimate (no commission/swap data is available here), but it
+// now prices each side the way it will actually fill.
+function valuationPriceFor(side){
+  return side === 'buy' ? state.bid : state.ask;
 }
 
 function getStopDistances(volumeInBrokerUnits){
@@ -1581,7 +1666,7 @@ function placeOrder(signal, overrideStops){
   // not a bug in when it closed, a bug in what the log claimed the stop
   // was. Now it reports whichever one is actually driving the trade.
   const stopLabel = overrideStops
-    ? 'grid rung, TP $'+settings.gridTpDollars
+    ? 'grid batch leg (shared exit, no individual TP)'
     : (settings.atrEnabled
         ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
         : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars);
@@ -1610,7 +1695,7 @@ function openPaperTrade(signal, overrideStops){
   // FIX: same mislabeled stop issue as placeOrder() above — see its
   // comment. Reused here so paper mode's log matches reality too.
   const stopLabelP = overrideStops
-    ? 'grid rung, TP $'+settings.gridTpDollars
+    ? 'grid batch leg (shared exit, no individual TP)'
     : (settings.atrEnabled
         ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
         : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars);
@@ -1721,11 +1806,11 @@ $('closeAllBtn').addEventListener('click', () => {
 
 function renderPositions(){
   const box = $('positionsList');
-  const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
 
   if(settings.paperMode){
     if(!state.paperPositions.length){ box.innerHTML = '<div style="color:var(--text-mid); font-size:12px; text-align:center; padding:6px;">No open trades.</div>'; return; }
     box.innerHTML = state.paperPositions.map(pos => {
+      const price = valuationPriceFor(pos.side);
       const priceDiff = price ? (pos.side==='buy' ? (price-pos.entry) : (pos.entry-price)) : 0;
       const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
       return '<div class="pos-row">' +
@@ -1743,6 +1828,7 @@ function renderPositions(){
       const side = td.tradeSide === 1 ? 'buy' : 'sell';
       const entry = pos.price; // already a real decimal price, not 1e5-scaled
       const vol = (td.volume || 0) / state.symbolLotUnits;
+      const price = valuationPriceFor(side);
       const priceDiff = price && entry ? (side==='buy' ? (price-entry) : (entry-price)) : 0;
       const pnl = priceDiff * dollarPerUnitFor(td.volume || 0);
       return '<div class="pos-row">' +
@@ -1817,10 +1903,10 @@ function onConnected(){
   updateDashboard();
 }
 function computeFloatingPnl(){
-  const price = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
-  if(!price) return 0;
+  if(!state.bid || !state.ask) return 0;
   if(settings.paperMode){
     return state.paperPositions.reduce((sum,pos) => {
+      const price = valuationPriceFor(pos.side);
       const priceDiff = pos.side==='buy' ? (price-pos.entry) : (pos.entry-price);
       return sum + priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
     }, 0);
@@ -1830,6 +1916,7 @@ function computeFloatingPnl(){
     const side = td.tradeSide === 1 ? 'buy' : 'sell';
     const entry = pos.price;
     if(entry == null) return sum;
+    const price = valuationPriceFor(side);
     const priceDiff = side==='buy' ? (price-entry) : (entry-price);
     return sum + priceDiff * dollarPerUnitFor(td.volume || 0);
   }, 0);
