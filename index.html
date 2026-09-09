@@ -1326,8 +1326,26 @@ function detectReversalPattern(bars){
   const prev = rsiVals[rsiVals.length-2];
   if(now == null || prev == null) return null;
 
-  if(prev <= settings.gridRsiOversold && now > settings.gridRsiOversold) return { side: 'buy', trendWas: 'down' };
-  if(prev >= settings.gridRsiOverbought && now < settings.gridRsiOverbought) return { side: 'sell', trendWas: 'up' };
+  // FIX (round 4 — "firing on a very bad entry... entering on a wrong
+  // candle"): your log caught it exactly. RSI cooled from 83.4 down to
+  // 56.3 — that's a completely normal pullback INSIDE a strong, still-
+  // climbing uptrend, not a real reversal, and price proved it by
+  // continuing straight up afterward while the SHORT just bled for 10
+  // minutes into its stop. A pure RSI cross can't tell "genuine reversal"
+  // apart from "trend paused to breathe, then kept going" — it needs a
+  // second, independent confirmation: has price actually broken its own
+  // short-term average (EMA9), not just cooled off while still closing
+  // above it? A real reversal shows up in PRICE, not only in the
+  // oscillator. Now a sell needs the RSI cross AND the current candle
+  // closing below EMA9 (price genuinely turning down); a buy needs the
+  // cross AND closing above EMA9. Either one alone is exactly the false
+  // signal your screenshots show.
+  const e9 = ema(closes, 9);
+  const priceBelowEma9 = closes[closes.length-1] < e9[e9.length-1];
+  const priceAboveEma9 = closes[closes.length-1] > e9[e9.length-1];
+
+  if(prev <= settings.gridRsiOversold && now > settings.gridRsiOversold && priceAboveEma9) return { side: 'buy', trendWas: 'down' };
+  if(prev >= settings.gridRsiOverbought && now < settings.gridRsiOverbought && priceBelowEma9) return { side: 'sell', trendWas: 'up' };
   return null;
 }
 
@@ -1459,7 +1477,8 @@ function checkGridBatchEntry(barClosed){
     const rsiNow = rsiVals[rsiVals.length-1];
     const e9 = ema(closes, 9), e21 = ema(closes, 21);
     const trend = e9[e9.length-1] > e21[e21.length-1] ? 'EMA9 > EMA21 (up)' : 'EMA9 < EMA21 (down)';
-    log('[Grid] RSI(' + settings.rsiPeriod + ') ' + (rsiNow!=null?rsiNow.toFixed(1):'—') + ' (grid OS/OB ' + settings.gridRsiOversold + '/' + settings.gridRsiOverbought + ') | ' + trend + ' | watching for a reversal cross...');
+    const priceVsE9 = closes[closes.length-1] > e9[e9.length-1] ? 'price above EMA9' : 'price below EMA9';
+    log('[Grid] RSI(' + settings.rsiPeriod + ') ' + (rsiNow!=null?rsiNow.toFixed(1):'—') + ' (grid OS/OB ' + settings.gridRsiOversold + '/' + settings.gridRsiOverbought + ') | ' + trend + ' | ' + priceVsE9 + ' | watching for a reversal cross...');
   }
 
   const pattern = detectReversalPattern(state.bars);
