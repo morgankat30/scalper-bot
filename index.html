@@ -923,9 +923,18 @@ function switchSymbol(symbolId, symbolName){
   send(PT.SYMBOL_BY_ID_REQ, { ctidTraderAccountId: state.accountId, symbolId: [symbolId] });
 
   state.expecting = 'strategy';
+  // FIX (part of the same timeframe-mismatch bug): this was hardcoded to
+  // always fetch 1-minute bars ('M1'), regardless of what timeframe was
+  // actually selected or what settings.timeframeSeconds was — so live
+  // ticks (bucketed at whatever that was) got appended onto a history
+  // array that started life as 1-minute candles, mixing two different bar
+  // widths in the same array. Now it fetches history at the SAME
+  // timeframe the chart (and therefore the strategy, per the fix above)
+  // is actually using, so the seed history and the live bars that get
+  // appended to it are always the same width.
   send(PT.GET_TRENDBARS_REQ, {
-    ctidTraderAccountId: state.accountId, symbolId, period:'M1',
-    fromTimestamp: Date.now() - 200*60000, toTimestamp: Date.now(),
+    ctidTraderAccountId: state.accountId, symbolId, period: TF_PERIODS[state.chartTimeframeMin] || 'M1',
+    fromTimestamp: Date.now() - state.chartTimeframeMin*60000*200, toTimestamp: Date.now(),
   });
 
   loadChartHistory();
@@ -1078,6 +1087,32 @@ document.querySelectorAll('.tf-btn').forEach(btn => {
     btn.classList.add('active');
     state.chartTimeframeMin = parseInt(btn.dataset.min, 10);
     state.chartCurrentBar = null;
+    // FIX ("the bot is just sitting there doing nothing yet the very clear
+    // trades are going" — the actual cause): the strategy engine
+    // (state.bars, detectReversalPattern, everything it decides on) was
+    // running on settings.timeframeSeconds — 15 seconds by default — a
+    // COMPLETELY separate, hidden bucket size from whatever timeframe you
+    // picked here for the chart itself. You were watching a clean 1-minute
+    // bounce form; the bot was analyzing a totally different, much noisier
+    // 15-second picture that never showed the same shape. Now picking a
+    // chart timeframe also sets what the strategy actually trades on, so
+    // it reacts to the exact same candles you're looking at. The "Candle
+    // speed" field in Settings still exists if you want to deliberately
+    // run the strategy faster or slower than the chart display, but this
+    // is what actually controls it day to day.
+    settings.timeframeSeconds = state.chartTimeframeMin * 60;
+    state.bars = [];
+    state.currentBar = null;
+    // Re-fetch strategy history at the new timeframe immediately, instead
+    // of leaving state.bars empty and making the bot wait ~22 candles
+    // (22 minutes on a 1m chart) before it can evaluate anything again.
+    if(state.symbolId != null){
+      state.expecting = 'strategy';
+      send(PT.GET_TRENDBARS_REQ, {
+        ctidTraderAccountId: state.accountId, symbolId: state.symbolId, period: TF_PERIODS[state.chartTimeframeMin] || 'M1',
+        fromTimestamp: Date.now() - state.chartTimeframeMin*60000*200, toTimestamp: Date.now(),
+      });
+    }
     loadChartHistory();
   });
 });
