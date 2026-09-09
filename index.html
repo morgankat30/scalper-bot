@@ -255,7 +255,7 @@
         <input type="checkbox" id="cfgGridEnabled" style="width:auto;">
       </div>
       <div class="field">
-        <label>Entry mode — Momentum: aggressive, trades WITH every closed candle's own direction (bullish candle = buy, bearish = sell), fires almost every candle. Reversal: conservative, only fires on a confirmed RSI reversal cross + price breaking EMA9, fires much less often.</label>
+        <label>Entry mode — Momentum: aggressive, fires once the last 2 closed candles both close the same direction (2 bullish = buy, 2 bearish = sell) — fast, but needs the direction to actually hold for 2 candles, not just 1. Reversal: conservative, only fires on a confirmed RSI reversal cross + price breaking EMA9, fires much less often.</label>
         <select id="cfgGridEntryMode">
           <option value="momentum">Momentum (aggressive — every candle)</option>
           <option value="reversal">Reversal (conservative — rare, confirmed only)</option>
@@ -1339,11 +1339,21 @@ function detectReversalPattern(bars){
   // candle in the right direction". The tight per-position TP/SL and the
   // batch drawdown limit are what manage the risk of being wrong
   // sometimes, not trying to only call rare perfect reversals.
+  // FIX (round 6 — "firing blindly... entering on a fake direction"): one
+  // candle's color isn't real confirmation — a single bearish candle
+  // inside a strong, still-climbing uptrend is just noise, and that's
+  // exactly what your screenshot shows: SHORT fired off one red candle
+  // while price kept right on climbing. Now it needs the last TWO closed
+  // candles both closing the same direction before it counts — "the first
+  // candle, then the second confirming the real direction" — which
+  // filters out that kind of single-candle whipsaw while still firing
+  // fast, just on an actually-held direction instead of one candle's noise.
   if(settings.gridEntryMode === 'momentum'){
     const last = bars[bars.length-1];
-    if(last.c > last.o) return { side: 'buy', trendWas: 'last candle bullish' };
-    if(last.c < last.o) return { side: 'sell', trendWas: 'last candle bearish' };
-    return null; // a dead-flat doji candle — genuinely no direction to trade
+    const prev = bars[bars.length-2];
+    if(last.c > last.o && prev.c > prev.o) return { side: 'buy', trendWas: 'last 2 candles both bullish' };
+    if(last.c < last.o && prev.c < prev.o) return { side: 'sell', trendWas: 'last 2 candles both bearish' };
+    return null; // direction didn't hold for 2 candles in a row — not confirmed yet
   }
 
   // 'reversal' mode — the older, more conservative option: an RSI reversal
@@ -1493,7 +1503,7 @@ function checkGridBatchEntry(barClosed){
     const e9 = ema(closes, 9), e21 = ema(closes, 21);
     const trend = e9[e9.length-1] > e21[e21.length-1] ? 'EMA9 > EMA21 (up)' : 'EMA9 < EMA21 (down)';
     const priceVsE9 = closes[closes.length-1] > e9[e9.length-1] ? 'price above EMA9' : 'price below EMA9';
-    const modeNote = settings.gridEntryMode === 'momentum' ? 'momentum mode — trades next candle\'s own direction' : 'watching for a reversal cross...';
+    const modeNote = settings.gridEntryMode === 'momentum' ? 'momentum mode — needs 2 consecutive candles same direction' : 'watching for a reversal cross...';
     log('[Grid] RSI(' + settings.rsiPeriod + ') ' + (rsiNow!=null?rsiNow.toFixed(1):'—') + ' (grid OS/OB ' + settings.gridRsiOversold + '/' + settings.gridRsiOverbought + ') | ' + trend + ' | ' + priceVsE9 + ' | ' + modeNote);
   }
 
