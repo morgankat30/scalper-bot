@@ -262,6 +262,11 @@
         <label>Max combined floating loss before the whole batch force-closes ($, 0 = off) — a bigger batch risks more per round as it climbs toward level 6, so this is the real protection if a reversal call turns out wrong; hitting it resets back to level 1 rather than advancing.</label>
         <input type="number" id="cfgGridMaxDD" step="1" value="15">
       </div>
+      <div class="field">
+        <label>Grid RSI reversal thresholds (oversold / overbought) — lower/higher = fewer, more extreme entries; the default 30/70 is tuned for a fast RSI(6) actually crossing back, not sitting at a rare 15/85</label>
+        <input type="number" id="cfgGridRsiOS" step="1" value="30" style="margin-bottom:4px;">
+        <input type="number" id="cfgGridRsiOB" step="1" value="70">
+      </div>
 
       <div class="settings-section">Speed</div>
       <div class="field">
@@ -435,6 +440,15 @@ const settings = {
   timeframeSeconds:15, cooldownSeconds:5,
   rsiPeriod:6, confluenceRequired:2, confluenceEnabled:true,
   rsiExtremeEnabled:false, rsiOversold:15, rsiOverbought:85,
+  // FIX ("8 minutes, still no trades... RSI hit 20.1 and 83.0 but never
+  // fired"): 15/85 are genuinely extreme thresholds, meant for the older,
+  // deliberately-rare RSI-extreme strategy above. A fast RSI(6) on
+  // 1-minute bars swings a wide range constantly but rarely touches a
+  // true 15/85 — it was starving Grid of entries on real, tradeable
+  // reversals like the one in your own log (20.1 -> 34.6, 83.0 -> 60.9 —
+  // both real reversals, neither counted). Grid gets its own, separately
+  // tunable, faster thresholds instead of sharing the conservative ones.
+  gridRsiOversold:30, gridRsiOverbought:70,
   structureEnabled:false, structureLookback:20,
   paperMode:true, maxOpenTrades:3,
   flipOnTP:false, // new feature — see maybeFlipAfterTP() below
@@ -504,6 +518,8 @@ function loadSavedSettings(){
   $('cfgGridEnabled').checked = settings.gridEnabled;
   $('cfgGridMaxLevels').value = settings.gridMaxLevels;
   $('cfgGridMaxDD').value = settings.gridMaxDrawdown;
+  $('cfgGridRsiOS').value = settings.gridRsiOversold;
+  $('cfgGridRsiOB').value = settings.gridRsiOverbought;
   $('cfgAtrPeriod').value = settings.atrPeriod;
   $('cfgAtrSlMult').value = settings.atrSlMult;
   $('cfgAtrTpMult').value = settings.atrTpMult;
@@ -533,6 +549,8 @@ function saveSettingsFromForm(){
   settings.gridEnabled = $('cfgGridEnabled').checked;
   settings.gridMaxLevels = Math.max(1, parseInt($('cfgGridMaxLevels').value, 10) || 6);
   settings.gridMaxDrawdown = Math.max(0, parseFloat($('cfgGridMaxDD').value) || 0);
+  settings.gridRsiOversold = Math.min(50, Math.max(1, parseFloat($('cfgGridRsiOS').value) || 30));
+  settings.gridRsiOverbought = Math.max(50, Math.min(99, parseFloat($('cfgGridRsiOB').value) || 70));
   settings.atrPeriod = Math.max(2, parseInt($('cfgAtrPeriod').value, 10) || 14);
   settings.atrSlMult = parseFloat($('cfgAtrSlMult').value) || 1.5;
   settings.atrTpMult = parseFloat($('cfgAtrTpMult').value) || 2.5;
@@ -1308,8 +1326,8 @@ function detectReversalPattern(bars){
   const prev = rsiVals[rsiVals.length-2];
   if(now == null || prev == null) return null;
 
-  if(prev <= settings.rsiOversold && now > settings.rsiOversold) return { side: 'buy', trendWas: 'down' };
-  if(prev >= settings.rsiOverbought && now < settings.rsiOverbought) return { side: 'sell', trendWas: 'up' };
+  if(prev <= settings.gridRsiOversold && now > settings.gridRsiOversold) return { side: 'buy', trendWas: 'down' };
+  if(prev >= settings.gridRsiOverbought && now < settings.gridRsiOverbought) return { side: 'sell', trendWas: 'up' };
   return null;
 }
 
@@ -1441,7 +1459,7 @@ function checkGridBatchEntry(barClosed){
     const rsiNow = rsiVals[rsiVals.length-1];
     const e9 = ema(closes, 9), e21 = ema(closes, 21);
     const trend = e9[e9.length-1] > e21[e21.length-1] ? 'EMA9 > EMA21 (up)' : 'EMA9 < EMA21 (down)';
-    log('[Grid] RSI(' + settings.rsiPeriod + ') ' + (rsiNow!=null?rsiNow.toFixed(1):'—') + ' | ' + trend + ' | watching for a reversal cross...');
+    log('[Grid] RSI(' + settings.rsiPeriod + ') ' + (rsiNow!=null?rsiNow.toFixed(1):'—') + ' (grid OS/OB ' + settings.gridRsiOversold + '/' + settings.gridRsiOverbought + ') | ' + trend + ' | watching for a reversal cross...');
   }
 
   const pattern = detectReversalPattern(state.bars);
