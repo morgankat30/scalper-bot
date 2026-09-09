@@ -1272,11 +1272,9 @@ function onSpot(p){
 //   - After a winning batch, the next one opens one size bigger (signal-
 //     dependent direction, can flip). After 6, it loops back to 1. A
 //     drawdown-triggered stop resets back to 1 instead of advancing.
-//   - Entries now require an actual candlestick reversal pattern
-//     (engulfing / pin bar) AGAINST the prevailing EMA trend, confirmed on
-//     a closed candle — not just "EMA9 is above EMA21 right now" — so it
-//     stops firing the instant a rally starts and instead waits for real
-//     signs the rally is actually running out of steam.
+//   - Entries fire on an RSI reversal cross — RSI actually crossing back
+//     out of oversold/overbought, not just a candle shape mid-trend — on
+//     a confirmed closed candle, not the live still-forming one.
 function gridBatchTarget(level){
   // FIX (per your latest message — this was doubling before: 0.5, 1, 2, 4,
   // 8, 16 — wrong): each position's own base TP is always $0.50, and the
@@ -1291,49 +1289,27 @@ function gridBatchTarget(level){
 // anything in the context of the move it's supposedly reversing.
 function detectReversalPattern(bars){
   if(bars.length < 22) return null;
-  const c2 = bars[bars.length-1], c1 = bars[bars.length-2];
-  const body = b => Math.abs(b.c - b.o);
-  const range = b => (b.h - b.l) || 1e-9;
-  const upperWick = b => b.h - Math.max(b.o, b.c);
-  const lowerWick = b => Math.min(b.o, b.c) - b.l;
-  const isBull = b => b.c > b.o, isBear = b => b.c < b.o;
-
   const closes = bars.map(b => b.c);
-  const e9 = ema(closes, 9), e21 = ema(closes, 21);
-  const upTrend = e9[e9.length-1] > e21[e21.length-1];
 
-  // FIX ("the market was selling but the bot was buying... it should be
-  // real live data signal not just guessing work"): your screenshot showed
-  // it exactly — three LONG entries fired one after another while price
-  // just kept falling and RSI kept sliding toward oversold, not away from
-  // it. The candle-shape checks alone (hammer/engulfing) were too loose —
-  // an ordinary down-continuation candle in a real trend can easily have a
-  // slightly longer wick and superficially "look like" a hammer without
-  // any of the selling actually being exhausted yet. A shape by itself
-  // isn't confirmation of anything.
-  // FIX ("missing good trades... 20 minutes, nothing happened"): the first
-  // version of this required RSI to be extreme on the EXACT SAME candle as
-  // the pattern — but a real reversal usually shows RSI going extreme
-  // first, then a confirming candle forms a bar or two later once RSI has
-  // already started curling back — requiring both on one exact candle is
-  // a rare coincidence, not how reversals actually play out, and it was
-  // starving the bot of entries on real setups like the one in your
-  // screenshot (RSI genuinely at 15, sustained downtrend, but no signal).
-  // Now it checks whether RSI touched the extreme zone at any point in the
-  // last 5 closed candles — still requires genuine exhaustion actually
-  // happened recently, just not on the identical bar as the pattern.
+  // FIX (round 3 — the pattern requirement itself was the remaining
+  // problem): candle-shape patterns (hammer/engulfing) are strict, fairly
+  // rare geometric conditions — requiring one on top of an RSI extreme was
+  // still too rare to fire at scalping speed, which is why your log went
+  // completely quiet even during a real recovery. Swapped it for the
+  // standard fast scalping trigger instead: an RSI REVERSAL CROSS — RSI
+  // actually crossing back up through oversold (not just sitting at or
+  // below it) for a buy, or back down through overbought for a sell. This
+  // is still real confirmation (the exhaustion already happened AND
+  // price/momentum has now genuinely turned, not just extended further),
+  // it just doesn't also require a specific rare candle shape to coincide
+  // with it — so it fires on the actual turn, at the speed a scalper needs.
   const rsiVals = rsi(closes, settings.rsiPeriod);
-  const recentRsi = rsiVals.slice(-5);
-  const wasOversold = recentRsi.some(v => v != null && v <= settings.rsiOversold);
-  const wasOverbought = recentRsi.some(v => v != null && v >= settings.rsiOverbought);
+  const now = rsiVals[rsiVals.length-1];
+  const prev = rsiVals[rsiVals.length-2];
+  if(now == null || prev == null) return null;
 
-  const bearishEngulfing = isBull(c1) && isBear(c2) && c2.o >= c1.c && c2.c <= c1.o;
-  const shootingStar = upperWick(c2) > body(c2)*2 && lowerWick(c2) < body(c2) && body(c2) < range(c2)*0.35;
-  const bullishEngulfing = isBear(c1) && isBull(c2) && c2.o <= c1.c && c2.c >= c1.o;
-  const hammer = lowerWick(c2) > body(c2)*2 && upperWick(c2) < body(c2) && body(c2) < range(c2)*0.35;
-
-  if(upTrend && (bearishEngulfing || shootingStar) && wasOverbought) return { side: 'sell', trendWas: 'up' };
-  if(!upTrend && (bullishEngulfing || hammer) && wasOversold) return { side: 'buy', trendWas: 'down' };
+  if(prev <= settings.rsiOversold && now > settings.rsiOversold) return { side: 'buy', trendWas: 'down' };
+  if(prev >= settings.rsiOverbought && now < settings.rsiOverbought) return { side: 'sell', trendWas: 'up' };
   return null;
 }
 
@@ -1449,6 +1425,24 @@ function checkGridBatchEntry(barClosed){
   }
   if(!settings.paperMode && !state.symbolFullLoaded) return;
   if(isForexWeekendClosure() && !isLikelyCrypto(state.symbol)) return;
+
+  // FIX ("nothing is even moving in the signal box anymore... i used to
+  // see the bot telling me RSI and EMA"): Grid mode never calls
+  // generateSignal() (the Confluence engine), which is the only thing that
+  // ever printed those "[Confluence] RSI(6)... EMA9..." lines — so while
+  // Grid is on, the log goes completely silent between trades even though
+  // it's actively watching every candle close. That silence isn't a sign
+  // it's frozen, but it looks exactly like one with zero information to
+  // go on. Now Grid prints its own version of that same live readout on
+  // every closed candle, so you can actually see what it's watching.
+  if(state.bars.length >= 22){
+    const closes = state.bars.map(b => b.c);
+    const rsiVals = rsi(closes, settings.rsiPeriod);
+    const rsiNow = rsiVals[rsiVals.length-1];
+    const e9 = ema(closes, 9), e21 = ema(closes, 21);
+    const trend = e9[e9.length-1] > e21[e21.length-1] ? 'EMA9 > EMA21 (up)' : 'EMA9 < EMA21 (down)';
+    log('[Grid] RSI(' + settings.rsiPeriod + ') ' + (rsiNow!=null?rsiNow.toFixed(1):'—') + ' | ' + trend + ' | watching for a reversal cross...');
+  }
 
   const pattern = detectReversalPattern(state.bars);
   if(!pattern) return;
