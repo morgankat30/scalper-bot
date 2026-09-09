@@ -251,19 +251,26 @@
 
       <div class="settings-section">Grid / Ladder scalping (batch pyramid)</div>
       <div class="toggle-row">
-        <label>Enabled — starts with 1 position on a confirmed candlestick reversal pattern, closes the whole batch together once its shared floating-P&L target is hit (level 1 = $0.50, doubling each level: $1, $2, $4, $8, $16), then opens one position bigger next round, up to 6 before looping back to 1. Replaces the strategies below while on.</label>
+        <label>Enabled — starts with 1 position on the entry signal below, closes the whole batch together once its shared floating-P&L target is hit (level 1 = $0.50, +$0.50 per level: $1, $1.50, $2...), then opens one position bigger next round, up to 6 before looping back to 1. Replaces the strategies below while on.</label>
         <input type="checkbox" id="cfgGridEnabled" style="width:auto;">
+      </div>
+      <div class="field">
+        <label>Entry mode — Momentum: aggressive, trades WITH every closed candle's own direction (bullish candle = buy, bearish = sell), fires almost every candle. Reversal: conservative, only fires on a confirmed RSI reversal cross + price breaking EMA9, fires much less often.</label>
+        <select id="cfgGridEntryMode">
+          <option value="momentum">Momentum (aggressive — every candle)</option>
+          <option value="reversal">Reversal (conservative — rare, confirmed only)</option>
+        </select>
       </div>
       <div class="field">
         <label>Max batch size (levels before looping back to 1)</label>
         <input type="number" id="cfgGridMaxLevels" step="1" value="6">
       </div>
       <div class="field">
-        <label>Max combined floating loss before the whole batch force-closes ($, 0 = off) — a bigger batch risks more per round as it climbs toward level 6, so this is the real protection if a reversal call turns out wrong; hitting it resets back to level 1 rather than advancing.</label>
+        <label>Max combined floating loss before the whole batch force-closes ($, 0 = off) — a bigger batch risks more per round as it climbs toward level 6, so this is the real protection if an entry turns out wrong; hitting it resets back to level 1 rather than advancing.</label>
         <input type="number" id="cfgGridMaxDD" step="1" value="15">
       </div>
       <div class="field">
-        <label>Grid RSI reversal thresholds (oversold / overbought) — lower/higher = fewer, more extreme entries; the default 30/70 is tuned for a fast RSI(6) actually crossing back, not sitting at a rare 15/85</label>
+        <label>Grid RSI reversal thresholds (oversold / overbought) — only used in Reversal mode; lower/higher = fewer, more extreme entries; the default 30/70 is tuned for a fast RSI(6) actually crossing back, not sitting at a rare 15/85</label>
         <input type="number" id="cfgGridRsiOS" step="1" value="30" style="margin-bottom:4px;">
         <input type="number" id="cfgGridRsiOB" step="1" value="70">
       </div>
@@ -449,6 +456,16 @@ const settings = {
   // both real reversals, neither counted). Grid gets its own, separately
   // tunable, faster thresholds instead of sharing the conservative ones.
   gridRsiOversold:30, gridRsiOverbought:70,
+  // New — Grid entry mode: 'momentum' trades WITH whatever direction the
+  // last closed candle actually showed (bullish candle -> buy, bearish ->
+  // sell), every single candle a batch isn't already open — this is the
+  // aggressive, "scalp every candle" style you asked for, relying on the
+  // tight per-position TP/SL to manage being wrong sometimes rather than
+  // trying to only call rare, high-conviction reversals. 'reversal' is the
+  // older, more conservative RSI-cross + EMA9-break mode from before, kept
+  // as an option, not the default, since you've been clear this should be
+  // aggressive.
+  gridEntryMode:'momentum',
   structureEnabled:false, structureLookback:20,
   paperMode:true, maxOpenTrades:3,
   flipOnTP:false, // new feature — see maybeFlipAfterTP() below
@@ -520,6 +537,7 @@ function loadSavedSettings(){
   $('cfgGridMaxDD').value = settings.gridMaxDrawdown;
   $('cfgGridRsiOS').value = settings.gridRsiOversold;
   $('cfgGridRsiOB').value = settings.gridRsiOverbought;
+  $('cfgGridEntryMode').value = settings.gridEntryMode;
   $('cfgAtrPeriod').value = settings.atrPeriod;
   $('cfgAtrSlMult').value = settings.atrSlMult;
   $('cfgAtrTpMult').value = settings.atrTpMult;
@@ -551,6 +569,7 @@ function saveSettingsFromForm(){
   settings.gridMaxDrawdown = Math.max(0, parseFloat($('cfgGridMaxDD').value) || 0);
   settings.gridRsiOversold = Math.min(50, Math.max(1, parseFloat($('cfgGridRsiOS').value) || 30));
   settings.gridRsiOverbought = Math.max(50, Math.min(99, parseFloat($('cfgGridRsiOB').value) || 70));
+  settings.gridEntryMode = $('cfgGridEntryMode').value === 'reversal' ? 'reversal' : 'momentum';
   settings.atrPeriod = Math.max(2, parseInt($('cfgAtrPeriod').value, 10) || 14);
   settings.atrSlMult = parseFloat($('cfgAtrSlMult').value) || 1.5;
   settings.atrTpMult = parseFloat($('cfgAtrTpMult').value) || 2.5;
@@ -1309,43 +1328,39 @@ function detectReversalPattern(bars){
   if(bars.length < 22) return null;
   const closes = bars.map(b => b.c);
 
-  // FIX (round 3 — the pattern requirement itself was the remaining
-  // problem): candle-shape patterns (hammer/engulfing) are strict, fairly
-  // rare geometric conditions — requiring one on top of an RSI extreme was
-  // still too rare to fire at scalping speed, which is why your log went
-  // completely quiet even during a real recovery. Swapped it for the
-  // standard fast scalping trigger instead: an RSI REVERSAL CROSS — RSI
-  // actually crossing back up through oversold (not just sitting at or
-  // below it) for a buy, or back down through overbought for a sell. This
-  // is still real confirmation (the exhaustion already happened AND
-  // price/momentum has now genuinely turned, not just extended further),
-  // it just doesn't also require a specific rare candle shape to coincide
-  // with it — so it fires on the actual turn, at the speed a scalper needs.
+  // FIX (round 5 — the actual disconnect): every previous round was still
+  // trying to build a conservative, rare, high-conviction REVERSAL caller
+  // — tightening or loosening how rare it should be. But you've said
+  // clearly and repeatedly: this is supposed to be an AGGRESSIVE grid that
+  // fires on nearly every candle, not a bot that waits for a perfect
+  // setup. Those are two different jobs. 'momentum' mode below is the
+  // real fix — it trades WITH whatever the last closed candle actually
+  // did, every time a batch isn't already open, exactly "scalp every
+  // candle in the right direction". The tight per-position TP/SL and the
+  // batch drawdown limit are what manage the risk of being wrong
+  // sometimes, not trying to only call rare perfect reversals.
+  if(settings.gridEntryMode === 'momentum'){
+    const last = bars[bars.length-1];
+    if(last.c > last.o) return { side: 'buy', trendWas: 'last candle bullish' };
+    if(last.c < last.o) return { side: 'sell', trendWas: 'last candle bearish' };
+    return null; // a dead-flat doji candle — genuinely no direction to trade
+  }
+
+  // 'reversal' mode — the older, more conservative option: an RSI reversal
+  // cross (crossing back OUT of oversold/overbought, not just touching it)
+  // confirmed by price actually breaking its own EMA9, not just the
+  // oscillator cooling off mid-trend. Kept available, not the default.
   const rsiVals = rsi(closes, settings.rsiPeriod);
   const now = rsiVals[rsiVals.length-1];
   const prev = rsiVals[rsiVals.length-2];
   if(now == null || prev == null) return null;
 
-  // FIX (round 4 — "firing on a very bad entry... entering on a wrong
-  // candle"): your log caught it exactly. RSI cooled from 83.4 down to
-  // 56.3 — that's a completely normal pullback INSIDE a strong, still-
-  // climbing uptrend, not a real reversal, and price proved it by
-  // continuing straight up afterward while the SHORT just bled for 10
-  // minutes into its stop. A pure RSI cross can't tell "genuine reversal"
-  // apart from "trend paused to breathe, then kept going" — it needs a
-  // second, independent confirmation: has price actually broken its own
-  // short-term average (EMA9), not just cooled off while still closing
-  // above it? A real reversal shows up in PRICE, not only in the
-  // oscillator. Now a sell needs the RSI cross AND the current candle
-  // closing below EMA9 (price genuinely turning down); a buy needs the
-  // cross AND closing above EMA9. Either one alone is exactly the false
-  // signal your screenshots show.
   const e9 = ema(closes, 9);
   const priceBelowEma9 = closes[closes.length-1] < e9[e9.length-1];
   const priceAboveEma9 = closes[closes.length-1] > e9[e9.length-1];
 
-  if(prev <= settings.gridRsiOversold && now > settings.gridRsiOversold && priceAboveEma9) return { side: 'buy', trendWas: 'down' };
-  if(prev >= settings.gridRsiOverbought && now < settings.gridRsiOverbought && priceBelowEma9) return { side: 'sell', trendWas: 'up' };
+  if(prev <= settings.gridRsiOversold && now > settings.gridRsiOversold && priceAboveEma9) return { side: 'buy', trendWas: 'bullish reversal confirmed (RSI cross + price back above EMA9)' };
+  if(prev >= settings.gridRsiOverbought && now < settings.gridRsiOverbought && priceBelowEma9) return { side: 'sell', trendWas: 'bearish reversal confirmed (RSI cross + price back below EMA9)' };
   return null;
 }
 
@@ -1478,7 +1493,8 @@ function checkGridBatchEntry(barClosed){
     const e9 = ema(closes, 9), e21 = ema(closes, 21);
     const trend = e9[e9.length-1] > e21[e21.length-1] ? 'EMA9 > EMA21 (up)' : 'EMA9 < EMA21 (down)';
     const priceVsE9 = closes[closes.length-1] > e9[e9.length-1] ? 'price above EMA9' : 'price below EMA9';
-    log('[Grid] RSI(' + settings.rsiPeriod + ') ' + (rsiNow!=null?rsiNow.toFixed(1):'—') + ' (grid OS/OB ' + settings.gridRsiOversold + '/' + settings.gridRsiOverbought + ') | ' + trend + ' | ' + priceVsE9 + ' | watching for a reversal cross...');
+    const modeNote = settings.gridEntryMode === 'momentum' ? 'momentum mode — trades next candle\'s own direction' : 'watching for a reversal cross...';
+    log('[Grid] RSI(' + settings.rsiPeriod + ') ' + (rsiNow!=null?rsiNow.toFixed(1):'—') + ' (grid OS/OB ' + settings.gridRsiOversold + '/' + settings.gridRsiOverbought + ') | ' + trend + ' | ' + priceVsE9 + ' | ' + modeNote);
   }
 
   const pattern = detectReversalPattern(state.bars);
@@ -1505,7 +1521,7 @@ function checkGridBatchEntry(barClosed){
   const stops = { slPrice, tpPrice };
 
   const level = state.gridBatchLevel;
-  log('Grid: ' + (pattern.side==='sell'?'bearish':'bullish') + ' reversal pattern confirmed against the ' + pattern.trendWas + 'trend — opening level ' + level + ' (' + level + (level===1?' position':' positions') + ') ' + (pattern.side==='sell'?'SHORT':'LONG') + ', each with its own $0.50 TP, batch target +$' + gridBatchTarget(level).toFixed(2) + '.');
+  log('Grid: ' + pattern.trendWas + ' — opening level ' + level + ' (' + level + (level===1?' position':' positions') + ') ' + (pattern.side==='sell'?'SHORT':'LONG') + ', each with its own $0.50 TP, batch target +$' + gridBatchTarget(level).toFixed(2) + '.');
   for(let i = 0; i < level; i++){
     if(settings.paperMode) openPaperTrade(pattern.side, stops);
     else placeOrder(pattern.side, stops);
