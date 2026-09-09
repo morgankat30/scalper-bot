@@ -435,6 +435,19 @@ const state = {
   // gridPositionIds tracks which real positionIds belong to it (paper legs
   // are tagged directly with isGrid:true instead, right on the position object).
   gridBatchOpen:false, gridBatchConfirmed:false, gridBatchLevel:1, gridPositionIds:[],
+  // New — recovery mode + same-candle fast continuation.
+  // gridBatchSide: which direction the currently-open (or just-closed)
+  // batch is trading.
+  // gridConfirmedDirection/gridConfirmedBarTime: the side that was
+  // properly 2-candle-confirmed, and which still-forming candle that
+  // confirmation belongs to — valid for fast re-entry ONLY while
+  // state.currentBar hasn't rolled over to a new candle yet. Cleared the
+  // moment a new candle starts, a loss happens, or a recovery resolves —
+  // anything after that needs a fresh, real confirmation again.
+  // gridIsRecovery: true while the CURRENT batch is itself a recovery
+  // attempt — prevents a lost recovery from immediately recovery-flipping
+  // again into a runaway martingale chain.
+  gridBatchSide:null, gridConfirmedDirection:null, gridConfirmedBarTime:null, gridIsRecovery:false,
   // New feature — dynamic lot sizing. Set once, the first time each
   // balance is ever known this session — see computeLots()'s own comment.
   lotScaleBaseBalance:null, lotScaleBasePaper:null,
@@ -1401,6 +1414,31 @@ function gridFloatingPnl(){
   }
   return floating;
 }
+// Shared by every path that opens a grid batch — the normal confirmed
+// entry, the same-candle fast continuation, and the recovery flip — so
+// all three place orders identically instead of duplicating this logic.
+function openGridBatch(side, level, label){
+  const volumeForStep = roundVolumeToStep(computeLots());
+  if(volumeForStep == null) return false;
+  const dpu = dollarPerUnitFor(volumeForStep);
+  if(!dpu) return false;
+  const slPrice = settings.stopLossDollars / dpu;
+  const tpPrice = 0.5 / dpu;
+  const stops = { slPrice, tpPrice };
+
+  log('Grid: ' + label + ' — opening level ' + level + ' (' + level + (level===1?' position':' positions') + ') ' + (side==='sell'?'SHORT':'LONG') + ', each with its own $0.50 TP, batch target +$' + gridBatchTarget(level).toFixed(2) + '.');
+  for(let i = 0; i < level; i++){
+    if(settings.paperMode) openPaperTrade(side, stops);
+    else placeOrder(side, stops);
+  }
+  state.gridBatchOpen = true;
+  state.gridBatchConfirmed = false; // reset — see checkGridBatchExit()'s fix note on why this matters
+  state.gridBatchSide = side;
+  state.gridBatchLevel = level;
+  addTradeMarker(side, null, (side==='sell'?'SHORT':'LONG') + (level>1?' x'+level:''));
+  return true;
+}
+
 function closeGridBatch(){
   if(settings.paperMode){
     state.paperPositions.filter(p => p.isGrid).forEach(p => closePaperPosition(p.id));
@@ -1441,11 +1479,11 @@ function checkGridBatchExit(){
   if(openNow > 0) state.gridBatchConfirmed = true;
   if(openNow === 0){
     if(!state.gridBatchConfirmed) return; // still waiting on the broker to confirm — not a closure
-    log('Grid batch closed outside the normal exit path (manual close or a stop) — resetting to level 1.');
+    log('Grid batch closed outside the normal exit path (manual close or a stop) — treating as a loss.');
     state.gridBatchOpen = false;
     state.gridBatchConfirmed = false;
     state.gridPositionIds = [];
-    state.gridBatchLevel = 1;
+    handleGridLoss();
     return;
   }
   // FIX (per your latest message): back to each position carrying its own
@@ -1461,13 +1499,65 @@ function checkGridBatchExit(){
   const target = gridBatchTarget(state.gridBatchLevel);
   if(floating >= target){
     log('Grid batch level ' + state.gridBatchLevel + ' (' + state.gridBatchLevel + (state.gridBatchLevel===1?' position':' positions') + ') hit its target (+' + floating.toFixed(2) + ' >= $' + target.toFixed(2) + ') — closing all together.');
+    const wonSide = state.gridBatchSide;
+    const wasRecovery = state.gridIsRecovery;
     closeGridBatch();
-    state.gridBatchLevel = state.gridBatchLevel >= settings.gridMaxLevels ? 1 : state.gridBatchLevel + 1;
+    const nextLevel = state.gridBatchLevel >= settings.gridMaxLevels ? 1 : state.gridBatchLevel + 1;
+
+    // New — "fire the next round on the same candle if it's still open":
+    // as long as the candle that produced our confirmation hasn't closed
+    // yet, keep escalating in the SAME direction immediately, without
+    // waiting for a fresh 2-candle confirmation cycle. The instant a new
+    // candle actually starts, this stops and normal confirmation takes
+    // over again — but the level it reached is kept, not reset, so it
+    // just continues the same climb once the next confirmation comes in.
+    const stillSameCandle = !wasRecovery && state.gridConfirmedDirection === wonSide
+      && state.currentBar && state.gridConfirmedBarTime === state.currentBar.t;
+
+    if(wasRecovery){
+      // A recovery attempt just WON — that's the full recovery, done.
+      // Back to fully normal: level 1, real confirmation required again.
+      log('Grid recovery trade won — back to normal.');
+      state.gridIsRecovery = false;
+      state.gridBatchLevel = 1;
+      state.gridConfirmedDirection = null;
+    } else if(stillSameCandle && nextLevel > 1){
+      openGridBatch(wonSide, nextLevel, 'same candle still open, continuing ' + (wonSide==='sell'?'SHORT':'LONG'));
+    } else {
+      state.gridBatchLevel = nextLevel;
+      state.gridConfirmedDirection = null; // candle rolled over (or we looped back to 1) — need a fresh real confirmation next
+    }
   } else if(settings.gridMaxDrawdown > 0 && floating <= -settings.gridMaxDrawdown){
-    log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the batch and resetting to level 1.');
+    log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the batch.');
     closeGridBatch();
-    state.gridBatchLevel = 1;
+    handleGridLoss();
   }
+}
+
+// New — recovery mode: "if it opens buys and hits a loss, immediately fire
+// the opposite direction with the SAME number of positions that just
+// lost, without waiting for the 2-candle confirmation — then go back to
+// the normal system." One shot only (gridIsRecovery guards against a
+// recovery that ALSO loses immediately flipping again into a runaway
+// martingale chain) — if the recovery itself loses, it resets fully to
+// level 1 and waits for a real confirmed signal like normal.
+function handleGridLoss(){
+  const lostSide = state.gridBatchSide;
+  const lostLevel = state.gridBatchLevel;
+  const wasRecovery = state.gridIsRecovery;
+  state.gridConfirmedDirection = null;
+
+  if(wasRecovery || !lostSide){
+    log('Grid recovery trade also lost — resetting fully to level 1.');
+    state.gridIsRecovery = false;
+    state.gridBatchLevel = 1;
+    return;
+  }
+
+  const recoverySide = lostSide === 'buy' ? 'sell' : 'buy';
+  log('Grid recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + lostLevel + ' immediately, no confirmation wait, to recover the loss.');
+  state.gridIsRecovery = true;
+  openGridBatch(recoverySide, lostLevel, 'recovery — immediate flip after a loss, no confirmation wait');
 }
 
 // Only acts on a CLOSED candle (barClosed) — a candlestick pattern is
@@ -1510,37 +1600,13 @@ function checkGridBatchEntry(barClosed){
   const pattern = detectReversalPattern(state.bars);
   if(!pattern) return;
 
-  const volumeForStep = roundVolumeToStep(computeLots());
-  if(volumeForStep == null) return;
-  const dpu = dollarPerUnitFor(volumeForStep);
-  if(!dpu) return;
-  // FIX (per your latest message — this was 0 before): each leg carries
-  // its own real $0.50 take-profit again — "the main base tp of all
-  // positions is 0.50" — sent straight to the broker like any other real
-  // TP, so it's a genuine safety net even if this app's own monitoring
-  // ever lags. SL is real and per-position too (settings.stopLossDollars),
-  // same as every other strategy. checkGridBatchExit() above still
-  // actively watches the combined floating total against the batch's own
-  // scaled target (level x $0.50) and closes everything together the
-  // moment THAT'S reached — which normally lands at basically the same
-  // time all the individual $0.50s would anyway, since every leg in a
-  // batch opens at nearly the same price. gridMaxDrawdown is the extra net
-  // on top for when it goes the other way.
-  const slPrice = settings.stopLossDollars / dpu;
-  const tpPrice = 0.5 / dpu;
-  const stops = { slPrice, tpPrice };
-
-  const level = state.gridBatchLevel;
-  log('Grid: ' + pattern.trendWas + ' — opening level ' + level + ' (' + level + (level===1?' position':' positions') + ') ' + (pattern.side==='sell'?'SHORT':'LONG') + ', each with its own $0.50 TP, batch target +$' + gridBatchTarget(level).toFixed(2) + '.');
-  for(let i = 0; i < level; i++){
-    if(settings.paperMode) openPaperTrade(pattern.side, stops);
-    else placeOrder(pattern.side, stops);
-  }
-  state.gridBatchOpen = true;
-  state.gridBatchConfirmed = false; // reset — see checkGridBatchExit()'s fix note on why this matters
-  // One clean marker for the whole batch instead of one per leg — see
-  // addTradeMarker()'s own fix note for why this matters.
-  addTradeMarker(pattern.side, null, (pattern.side==='sell'?'SHORT':'LONG') + (level>1?' x'+level:''));
+  const opened = openGridBatch(pattern.side, state.gridBatchLevel, pattern.trendWas);
+  if(!opened) return;
+  // Remember this confirmation is tied to whichever candle is forming
+  // right now — valid for the same-candle fast-continuation logic in
+  // checkGridBatchExit() only until this exact candle closes.
+  state.gridConfirmedDirection = pattern.side;
+  state.gridConfirmedBarTime = state.currentBar ? state.currentBar.t : null;
 }
 
 function pushToBars(price){
