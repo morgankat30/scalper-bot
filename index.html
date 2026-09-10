@@ -448,6 +448,12 @@ const state = {
   // attempt — prevents a lost recovery from immediately recovery-flipping
   // again into a runaway martingale chain.
   gridBatchSide:null, gridConfirmedDirection:null, gridConfirmedBarTime:null, gridIsRecovery:false,
+  // New — caps the same-candle continuation at exactly ONE extra round
+  // (the opposite-direction pullback bet), instead of escalating
+  // indefinitely while a candle stays open. Set true right after firing
+  // that one extra round; checked so a second same-candle round is never
+  // fired after it.
+  gridSameCandleContinued:false,
   // New feature — dynamic lot sizing. Set once, the first time each
   // balance is ever known this session — see computeLots()'s own comment.
   lotScaleBaseBalance:null, lotScaleBasePaper:null,
@@ -1501,17 +1507,24 @@ function checkGridBatchExit(){
     log('Grid batch level ' + state.gridBatchLevel + ' (' + state.gridBatchLevel + (state.gridBatchLevel===1?' position':' positions') + ') hit its target (+' + floating.toFixed(2) + ' >= $' + target.toFixed(2) + ') — closing all together.');
     const wonSide = state.gridBatchSide;
     const wasRecovery = state.gridIsRecovery;
+    const alreadyContinued = state.gridSameCandleContinued;
     closeGridBatch();
     const nextLevel = state.gridBatchLevel >= settings.gridMaxLevels ? 1 : state.gridBatchLevel + 1;
 
-    // New — "fire the next round on the same candle if it's still open":
-    // as long as the candle that produced our confirmation hasn't closed
-    // yet, keep escalating in the SAME direction immediately, without
-    // waiting for a fresh 2-candle confirmation cycle. The instant a new
-    // candle actually starts, this stops and normal confirmation takes
-    // over again — but the level it reached is kept, not reset, so it
-    // just continues the same climb once the next confirmation comes in.
-    const stillSameCandle = !wasRecovery && state.gridConfirmedDirection === wonSide
+    // FIX (per your latest message — this replaces open-ended same-candle
+    // escalation with exactly what you described): as long as the candle
+    // is still open AND we haven't already used this candle's one extra
+    // round, immediately fire ONE more round — but in the OPPOSITE
+    // direction this time, sized one bigger, since "the candle always has
+    // to pull back" after the move that just took profit. Firing it the
+    // instant this round closes means it naturally enters right around
+    // where the first round's TP just hit, with no separate limit-order
+    // logic needed — a market order fired that instant lands there anyway.
+    // After THIS round resolves, the same-candle logic is done for this
+    // candle no matter what — it goes back to needing a real, fresh
+    // 2-candle confirmation, which is the actual protection against
+    // blindly re-entering into a fake move like your screenshots showed.
+    const stillSameCandle = !wasRecovery && !alreadyContinued && state.gridConfirmedDirection === wonSide
       && state.currentBar && state.gridConfirmedBarTime === state.currentBar.t;
 
     if(wasRecovery){
@@ -1521,11 +1534,17 @@ function checkGridBatchExit(){
       state.gridIsRecovery = false;
       state.gridBatchLevel = 1;
       state.gridConfirmedDirection = null;
+      state.gridSameCandleContinued = false;
     } else if(stillSameCandle && nextLevel > 1){
-      openGridBatch(wonSide, nextLevel, 'same candle still open, continuing ' + (wonSide==='sell'?'SHORT':'LONG'));
+      const oppositeSide = wonSide === 'buy' ? 'sell' : 'buy';
+      openGridBatch(oppositeSide, nextLevel, 'candle still open — pullback round, opposite direction (' + (oppositeSide==='sell'?'SHORT':'LONG') + ')');
+      state.gridConfirmedDirection = oppositeSide;
+      state.gridSameCandleContinued = true; // this candle's one extra round is used — no further same-candle rounds after this
     } else {
       state.gridBatchLevel = nextLevel;
-      state.gridConfirmedDirection = null; // candle rolled over (or we looped back to 1) — need a fresh real confirmation next
+      state.gridConfirmedDirection = null; // back to normal — a fresh, real 2-candle confirmation is required next
+      state.gridSameCandleContinued = false;
+      log('Grid: back to normal — watching for a fresh confirmed signal to see if it continues ' + (wonSide==='sell'?'bearish':'bullish') + ' or reverses, before firing again.');
     }
   } else if(settings.gridMaxDrawdown > 0 && floating <= -settings.gridMaxDrawdown){
     log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the batch.');
@@ -1546,6 +1565,7 @@ function handleGridLoss(){
   const lostLevel = state.gridBatchLevel;
   const wasRecovery = state.gridIsRecovery;
   state.gridConfirmedDirection = null;
+  state.gridSameCandleContinued = false;
 
   if(wasRecovery || !lostSide){
     log('Grid recovery trade also lost — resetting fully to level 1.');
@@ -1607,6 +1627,7 @@ function checkGridBatchEntry(barClosed){
   // checkGridBatchExit() only until this exact candle closes.
   state.gridConfirmedDirection = pattern.side;
   state.gridConfirmedBarTime = state.currentBar ? state.currentBar.t : null;
+  state.gridSameCandleContinued = false; // a fresh confirmed entry — this candle's one extra round is available again
 }
 
 function pushToBars(price){
