@@ -292,6 +292,10 @@
         <label>Commission per 1.0 lot, round turn ($) — check cTrader's own account/symbol spec for your real rate; every P&L estimate below subtracts this so it matches the broker's real number instead of just raw price movement</label>
         <input type="number" id="cfgCommission" step="0.01" value="0">
       </div>
+      <div class="field">
+        <label>Paper mode simulated slippage (pips) — real mode never uses this, it logs the broker's own real slippage instead; this just keeps paper-mode results honest instead of unrealistically perfect</label>
+        <input type="number" id="cfgPaperSlippage" step="0.1" value="0.3">
+      </div>
 
       <div class="settings-section">Strategy 1 — EMA/RSI/Bollinger confluence</div>
       <div class="toggle-row">
@@ -457,6 +461,10 @@ const state = {
   // New feature — dynamic lot sizing. Set once, the first time each
   // balance is ever known this session — see computeLots()'s own comment.
   lotScaleBaseBalance:null, lotScaleBasePaper:null,
+  // New — real slippage logging: FIFO queue of {side, expectedPrice} for
+  // orders just sent, matched against newly-confirmed real fills in
+  // RECONCILE_RES to log the actual difference. See pipValueForSymbol().
+  pendingRealOrders:[],
 };
 
 const settings = {
@@ -499,6 +507,13 @@ const settings = {
   // (check cTrader's own account/spec page for it) and every P&L estimate
   // below will subtract it, same as the broker actually does.
   commissionPerLot:0,
+  // New — paper mode slippage simulation (additive only, doesn't touch
+  // real trading at all): applies a small, adverse price offset to
+  // simulated fills so paper-mode results don't look better than real
+  // trading will actually be. Real mode never uses this — real slippage
+  // is whatever the broker's own execution actually reports, logged
+  // honestly in RECONCILE_RES instead of simulated.
+  paperSlippagePips:0.3,
 };
 
 const paperLines = {}; // positionId -> {sl, tp} price line objects, for removing on close
@@ -564,6 +579,7 @@ function loadSavedSettings(){
   $('cfgCooldown').value = settings.cooldownSeconds;
   $('cfgMaxTrades').value = settings.maxOpenTrades;
   $('cfgCommission').value = settings.commissionPerLot;
+  $('cfgPaperSlippage').value = settings.paperSlippagePips;
   $('cfgConfluenceEnabled').checked = settings.confluenceEnabled;
   $('cfgRsiPeriod').value = settings.rsiPeriod;
   $('cfgConfluence').value = String(settings.confluenceRequired);
@@ -596,6 +612,7 @@ function saveSettingsFromForm(){
   settings.cooldownSeconds = Math.max(1, parseInt($('cfgCooldown').value, 10) || 5);
   settings.maxOpenTrades = Math.max(1, parseInt($('cfgMaxTrades').value, 10) || 3);
   settings.commissionPerLot = Math.max(0, parseFloat($('cfgCommission').value) || 0);
+  settings.paperSlippagePips = Math.max(0, parseFloat($('cfgPaperSlippage').value) || 0);
   settings.confluenceEnabled = $('cfgConfluenceEnabled').checked;
   settings.rsiPeriod = Math.max(2, parseInt($('cfgRsiPeriod').value, 10) || 6);
   settings.confluenceRequired = parseInt($('cfgConfluence').value, 10) === 3 ? 3 : 2;
@@ -842,6 +859,33 @@ function handleMessage(m){
       const wasOpen = state.positions.length > 0;
       const oldPositions = state.positions;
       state.positions = p.position || [];
+
+      // New feature (additive only, nothing else touched) — real slippage
+      // logging: for every genuinely new real position since the last
+      // reconcile, match it against the FIFO queue of orders we just sent
+      // (placeOrder() pushes {side, expectedPrice} there right when it
+      // sends) and log the real difference between what we asked for and
+      // what we actually got filled at. This is the honest way to measure
+      // slippage — it can only be known AFTER a fill confirms, never
+      // predicted from the spread beforehand (a spread check is a
+      // different number entirely and isn't slippage).
+      if(!settings.paperMode){
+        const oldIds = new Set(oldPositions.map(x => x.positionId));
+        state.positions.forEach(pos => {
+          if(oldIds.has(pos.positionId)) return; // already known, not a new fill
+          const td = pos.tradeData || {};
+          const side = td.tradeSide === 1 ? 'buy' : 'sell';
+          const idx = state.pendingRealOrders.findIndex(o => o.side === side);
+          if(idx === -1 || pos.price == null) return;
+          const expected = state.pendingRealOrders[idx].expectedPrice;
+          state.pendingRealOrders.splice(idx, 1);
+          const pip = pipValueForSymbol();
+          const diff = side === 'buy' ? (pos.price - expected) : (expected - pos.price);
+          const slipPips = diff / pip;
+          if(Math.abs(slipPips) < 0.01) return; // filled at essentially the exact price — nothing worth logging
+          log((side==='buy'?'LONG':'SHORT')+' '+state.symbol+' filled '+pos.price.toFixed(5)+' (wanted '+expected.toFixed(5)+') — '+(slipPips>=0?'+':'')+slipPips.toFixed(1)+' pip slippage'+(slipPips<0?' (against you)':' (in your favor)'));
+        });
+      }
 
       // New feature — Grid/Ladder: pick up any positionId that's new since
       // the last reconcile while a ladder is currently running, so
@@ -1774,6 +1818,14 @@ function roundVolumeToStep(lots){
 }
 
 const USD_BASE_PAIRS = { USDJPY:1, USDCHF:1, USDCAD:1 };
+// New — shared pip-size convention for the slippage feature below: 2 and
+// 3-decimal symbols (gold, indices, JPY pairs) use 0.01 as their "pip",
+// everything else (5/4-decimal majors) uses 0.0001.
+function pipValueForSymbol(){
+  const d = state.symbolDigits;
+  return (d === 3 || d === 2) ? 0.01 : 0.0001;
+}
+
 function dollarPerUnitFor(volumeInBrokerUnits){
   const base = volumeInBrokerUnits / 100; // matches cTrader's own "volume is in cents" convention
   if(USD_BASE_PAIRS[state.symbol] && state.bid){
@@ -1961,6 +2013,13 @@ function placeOrder(signal, overrideStops){
   if(relTP > 0) orderPayload.relativeTakeProfit = relTP;
   send(PT.NEW_ORDER_REQ, orderPayload);
 
+  // New — see pipValueForSymbol()'s comment: records what price we asked
+  // for, so RECONCILE_RES can log the REAL slippage once this fill
+  // confirms. Capped so it can never grow unbounded if a fill is ever
+  // missed for some reason.
+  state.pendingRealOrders.push({ side: signal, expectedPrice: signal === 'buy' ? state.ask : state.bid });
+  if(state.pendingRealOrders.length > 20) state.pendingRealOrders.shift();
+
   // New feature — Flip on TP (real-mode side, best-effort — see the
   // state.lastRealSide/lastRealTpPrice comment near the top of this file
   // for why this is an estimate, not a certainty). Entry price isn't known
@@ -2007,8 +2066,17 @@ function openPaperTrade(signal, overrideStops){
     return;
   }
   const { slPrice, tpPrice } = overrideStops || getStopDistances(volume);
-  const entry = signal === 'buy' ? state.ask : state.bid;
-  if(!entry) return;
+  const rawEntry = signal === 'buy' ? state.ask : state.bid;
+  if(!rawEntry) return;
+  // New — paper mode simulated slippage (additive only — real mode is
+  // completely untouched, see pipValueForSymbol()'s comment above). Real
+  // market orders almost always fill slightly against you, not in your
+  // favor, so this models the adverse (worse) direction: entry costs a
+  // little more on a buy, pays a little less on a sell. sl/tp are computed
+  // from this slipped entry below, exactly like they already were from
+  // the un-slipped one, so nothing else about the position's shape changes.
+  const slip = settings.paperSlippagePips * pipValueForSymbol();
+  const entry = slip > 0 ? (signal === 'buy' ? rawEntry + slip : rawEntry - slip) : rawEntry;
   const actualLots = volume / state.symbolLotUnits;
   const pos = {
     id: 'p'+Date.now(), side: signal, entry, lots: actualLots,
@@ -2024,7 +2092,8 @@ function openPaperTrade(signal, overrideStops){
     : (settings.atrEnabled
         ? 'SL ATR('+settings.atrPeriod+')x'+settings.atrSlMult+' / TP ATR('+settings.atrPeriod+')x'+settings.atrTpMult
         : 'SL $'+settings.stopLossDollars+' / TP $'+settings.takeProfitDollars);
-  log((signal==='buy'?'LONG':'SHORT')+' '+actualLots.toFixed(2)+' lots '+state.symbol+' @ '+entry.toFixed(5)+' — '+stopLabelP+' (PAPER)');
+  const slipNote = slip > 0 ? (' (wanted '+rawEntry.toFixed(5)+', sim. slippage '+settings.paperSlippagePips.toFixed(1)+' pips)') : '';
+  log((signal==='buy'?'LONG':'SHORT')+' '+actualLots.toFixed(2)+' lots '+state.symbol+' @ '+entry.toFixed(5)+slipNote+' — '+stopLabelP+' (PAPER)');
 
   addTradeMarker(signal, entry);
   if(state.chartSeries){
