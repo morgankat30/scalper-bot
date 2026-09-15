@@ -255,8 +255,14 @@
         <input type="number" id="cfgProfitLockArm" step="0.01" value="0.38">
       </div>
       <div class="field">
-        <label>Giveback ($) — how much profit it's allowed to hand back from the arm level before it locks in and reverses (arm $0.38, giveback $0.08 → closes the instant floating profit drops to $0.30)</label>
+        <label>Giveback ($) — how much profit it's allowed to give back from whatever peak it reaches before it locks in and reverses (e.g. giveback $0.08 → if floating peaks at $1.40, it locks in around $1.32, not a fixed low line)</label>
         <input type="number" id="cfgProfitLockGiveback" step="0.01" value="0.08">
+      </div>
+
+      <div class="settings-section">Ghost Mode</div>
+      <div class="toggle-row">
+        <label>Always alternate direction after every win, immediately, no 2-candle confirmation wait — long wins and fires short, that wins and fires long, forever, as fast and aggressive as possible. This is the same always-reverse behavior that produced the whipsaw losses in earlier sessions before the 2-candle-confirmation safety was added — on by choice, not by default.</label>
+        <input type="checkbox" id="cfgGhostMode" style="width:auto;">
       </div>
 
       <div class="settings-section">Loss recovery sizing</div>
@@ -557,6 +563,9 @@ const settings = {
   // profitLockGiveback are both in dollars, same units as the SL/TP
   // fields above; giveback should always be smaller than arm.
   profitLockEnabled:false, profitLockArm:0.38, profitLockGiveback:0.08,
+  // New — Ghost Mode: always-alternate direction after every win, no
+  // confirmation wait, as fast and aggressive as possible. Off by default.
+  ghostMode:false,
   // New feature — Loss recovery sizing. See computeRecoveryLevel()'s own
   // comment for exactly what this does and does NOT guarantee.
   // recoveryTargetProfit: extra $ aimed for on top of clearing the pool,
@@ -643,6 +652,7 @@ function loadSavedSettings(){
   $('cfgTP').value = settings.takeProfitDollars;
   $('cfgFlipOnTP').checked = settings.flipOnTP;
   $('cfgProfitLockEnabled').checked = settings.profitLockEnabled;
+  $('cfgGhostMode').checked = settings.ghostMode;
   $('cfgProfitLockArm').value = settings.profitLockArm;
   $('cfgProfitLockGiveback').value = settings.profitLockGiveback;
   $('cfgRecoveryEnabled').checked = settings.recoveryEnabled;
@@ -683,6 +693,7 @@ function saveSettingsFromForm(){
   settings.takeProfitDollars = parseFloat($('cfgTP').value) || 0.50;
   settings.flipOnTP = $('cfgFlipOnTP').checked;
   settings.profitLockEnabled = $('cfgProfitLockEnabled').checked;
+  settings.ghostMode = $('cfgGhostMode').checked;
   settings.profitLockArm = Math.max(0.01, parseFloat($('cfgProfitLockArm').value) || 0.38);
   settings.profitLockGiveback = Math.max(0, Math.min(settings.profitLockArm - 0.01, parseFloat($('cfgProfitLockGiveback').value) || 0.08));
   settings.recoveryEnabled = $('cfgRecoveryEnabled').checked;
@@ -1690,7 +1701,12 @@ function gridFloatingPnl(){
 // real signal confirms still opens at the correct recovery size.
 function fireReversal(kind, side, level, label, waitIds){
   if(settings.paperMode || !waitIds || !waitIds.length){
-    log('Closed — waiting for a fresh 2-candle confirmation before re-entering (no more blind reversals).');
+    if(settings.ghostMode){
+      if(kind === 'grid') openGridBatch(side, level, label);
+      else for(let i=0;i<level;i++) placeOrder(side);
+    } else {
+      log('Closed — waiting for a fresh 2-candle confirmation before re-entering (no more blind reversals).');
+    }
     return;
   }
   state.pendingReversal = { kind, side, level, label };
@@ -1701,9 +1717,15 @@ function checkPendingReversal(){
   if(!state.pendingReversal) return;
   const stillOpen = state.pendingReversalWaitIds.some(id => state.positions.some(p => p.positionId === id));
   if(stillOpen) return;
+  const r = state.pendingReversal;
   state.pendingReversal = null;
   state.pendingReversalWaitIds = [];
-  log('Closed — waiting for a fresh 2-candle confirmation before re-entering (no more blind reversals).');
+  if(settings.ghostMode){
+    if(r.kind === 'grid') openGridBatch(r.side, r.level, r.label);
+    else for(let i=0;i<r.level;i++) placeOrder(r.side);
+  } else {
+    log('Closed — waiting for a fresh 2-candle confirmation before re-entering (no more blind reversals).');
+  }
 }
 
 // Shared by every path that opens a grid batch — the normal confirmed
@@ -1818,6 +1840,22 @@ function checkGridBatchExit(){
     // blindly re-entering into a fake move like your screenshots showed.
     const stillSameCandle = !wasRecovery && !alreadyContinued && state.gridConfirmedDirection === wonSide
       && state.currentBar && state.gridConfirmedBarTime === state.currentBar.t;
+
+    // New — Ghost Mode: when on, every win (any win, not just a
+    // same-candle pullback) immediately flips and fires the opposite
+    // direction at the same size, forever, ignoring the normal "wait for a
+    // fresh 2-candle confirmation" safety — exactly the always-alternate
+    // behavior you asked for. This is OFF by default because it's the
+    // same behavior that produced the whipsaw losses in your last few
+    // logs; toggle it on deliberately in settings when you want it.
+    if(settings.ghostMode){
+      const oppositeSide = wonSide === 'buy' ? 'sell' : 'buy';
+      fireReversal('grid', oppositeSide, state.gridBatchLevel, 'ghost mode — always alternate, ' + (oppositeSide==='sell'?'SHORT':'LONG') + ' now', closingIds);
+      state.gridIsRecovery = false;
+      state.gridConfirmedDirection = null;
+      state.gridSameCandleContinued = false;
+      return;
+    }
 
     if(wasRecovery){
       if(settings.recoveryEnabled && state.recoveryLossPool > 0){
