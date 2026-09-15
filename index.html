@@ -1785,8 +1785,21 @@ function checkGridBatchExit(){
       log('Grid recovery ended via trail-lock — back to normal after this flip resolves.');
       state.gridIsRecovery = false;
     }
+    // FIX ("only firing in one direction and sits there... supposed to
+    // fire again on the same candle after hitting TP, opposite direction"):
+    // this used to also set gridSameCandleContinued=true, which is the
+    // SAME flag the real "hit TP while candle open -> one pullback round"
+    // feature uses to cap itself at one extra round per candle. That meant
+    // any trail-lock event anywhere in a candle silently used up that
+    // candle's one pullback round even when no real TP had been hit yet —
+    // exactly what happened at 6:23:02->6:23:05 in your log: a trail-lock
+    // flip, then a genuine TP hit two seconds later that should have fired
+    // the opposite-direction pullback but got blocked instead. Trail-lock
+    // and the pullback-on-TP feature are two separate things and must not
+    // share this flag — only gridConfirmedDirection needs updating here,
+    // so a later REAL TP hit on this flipped batch still gets correctly
+    // recognized as "same side that's currently confirmed."
     state.gridConfirmedDirection = flipSide;
-    state.gridSameCandleContinued = true; // this flip doesn't need fresh confirmation, but a further one after it does
   } else if(settings.gridMaxDrawdown > 0 && floating <= -settings.gridMaxDrawdown){
     log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the batch.');
     closeGridBatch();
