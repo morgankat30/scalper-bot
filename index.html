@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Scalper Console — Pepperstone / cTrader</title>
+<title>Scalper Console — Deriv / cTrader</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root{
@@ -32,7 +32,7 @@
   .field input, .field select{ width:100%; border:none; background:transparent; font-size:15px;
     color:var(--text-dark); font-weight:600; outline:none; padding:0; appearance:none; }
   .platform-row{ display:flex; align-items:center; gap:10px; }
-  .platform-row .glyph{ width:26px;height:26px;border-radius:6px; background:#f97316;
+  .platform-row .glyph{ width:26px;height:26px;border-radius:6px; background:#ff444f;
     display:flex;align-items:center;justify-content:center; font-size:11px; color:#fff; font-weight:700; flex-shrink:0; }
   .connect-btn{ width:100%; margin-top:14px; background:#0d1117; color:#fff; border:none;
     border-radius:12px; padding:14px; font-size:15px; font-weight:600; cursor:pointer; }
@@ -64,7 +64,7 @@
 
   .active-card{ background:var(--accent); border-radius:14px; padding:10px 14px;
     display:flex; align-items:center; gap:12px; margin-bottom:10px; }
-  .active-card .glyph{ width:28px;height:28px;border-radius:7px; background:#f97316;
+  .active-card .glyph{ width:28px;height:28px;border-radius:7px; background:#ff444f;
     display:flex;align-items:center;justify-content:center; font-size:11px;color:#fff;flex-shrink:0; font-weight:700;}
   .active-card .name{ color:#fff; font-weight:600; font-size:13px; flex:1; }
   .active-card .check{ color:var(--ok); font-size:15px; }
@@ -138,14 +138,25 @@
         <label>Access Token</label>
         <input type="password" id="ctTok" placeholder="paste access token">
       </div>
+
+      <button class="connect-btn" id="ctrLoginBtn" style="background:#2b3650;" disabled>Log in with cTrader to get a token</button>
+      <div class="hint" id="ctrLoginHint">Needs Client ID filled in above first. Opens cTrader's real login page; after you approve, it sends you back here with a one-time code — you'll then run a short command in Termux to turn that into your Access Token (browsers can't complete that last step directly).</div>
+
+      <div id="codePanel" style="display:none; background:#0d1117; border:1px solid #2b3650; border-radius:12px; padding:12px 14px; margin:10px 0;">
+        <div style="color:#fff; font-size:12px; font-weight:700; margin-bottom:6px;">Code received — run this in Termux:</div>
+        <textarea id="codeCmd" readonly rows="5" style="width:100%; background:#000; color:#7d8590; font-family:monospace; font-size:10.5px; border:1px solid #2b3650; border-radius:8px; padding:8px; resize:none;"></textarea>
+        <button class="connect-btn" id="copyCmdBtn" type="button" style="margin-top:8px; padding:10px;">Copy command</button>
+        <div class="hint" style="margin-top:8px; text-align:left;">Paste that into Termux and run it. The response is JSON — copy the <b>accessToken</b> value into the Access Token field above.</div>
+      </div>
+
       <div class="field">
         <label><input type="checkbox" id="ctPaper" style="width:auto;display:inline;margin-right:6px;">Start in Paper mode (simulated trades, no real orders)</label>
       </div>
       <div class="field">
         <label>Broker</label>
         <div class="platform-row">
-          <div class="glyph">PS</div>
-          <span style="color:var(--text-dark);font-weight:600;font-size:15px;">Pepperstone (cTrader)</span>
+          <div class="glyph">DRV</div>
+          <span style="color:var(--text-dark);font-weight:600;font-size:15px;">Deriv (cTrader)</span>
         </div>
       </div>
       <button class="connect-btn" id="connectBtn">Connect account</button>
@@ -163,7 +174,7 @@
       <div class="eyebrow">THIS IS AN INTRADAY TRADING ROBOT</div>
       <div class="bot-badge">🦅</div>
       <div class="bot-name">EDGE SCALPER</div>
-      <div class="bot-sub">Pepperstone · cTrader · EMA/RSI/BB/Structure</div>
+      <div class="bot-sub">Deriv · cTrader · EMA/RSI/BB/Structure</div>
       <div class="env-switch">
         <button class="env-btn" id="envDemoBtn">DEMO</button>
         <button class="env-btn" id="envLiveBtn">LIVE</button>
@@ -177,8 +188,8 @@
     </div>
 
     <div class="active-card" id="activeCard">
-      <div class="glyph">PS</div>
-      <div class="name" id="activeCardName">EDGE SCALPER — Pepperstone</div>
+      <div class="glyph">DRV</div>
+      <div class="name" id="activeCardName">EDGE SCALPER — Deriv</div>
       <div class="check">✓</div>
     </div>
 
@@ -274,6 +285,14 @@
         <input type="number" id="cfgGridRsiOS" step="1" value="30" style="margin-bottom:4px;">
         <input type="number" id="cfgGridRsiOB" step="1" value="70">
       </div>
+      <div class="toggle-row">
+        <label>Profit-lock trail — apart from the normal TP, this watches the batch's own floating-profit peak. If it gives back more than the amount below before ever reaching the TP, it locks in what's left right now and immediately flips into the new direction (same position count), instead of risking the pullback turn into a full loss.</label>
+        <input type="checkbox" id="cfgGridTrailArmed" style="width:auto;">
+      </div>
+      <div class="field">
+        <label>Profit-lock giveback ($) — how far floating profit can fall from its peak before the trail above triggers</label>
+        <input type="number" id="cfgGridTrailGiveback" step="0.01" value="0.15">
+      </div>
 
       <div class="settings-section">Speed</div>
       <div class="field">
@@ -365,7 +384,7 @@
 
 <script>
 /* =========================================================================
-   PEPPERSTONE / cTRADER SCALPING BOT
+   DERIV / cTRADER SCALPING BOT
    Connects directly to cTrader's Open API over WebSocket (JSON protocol,
    port 5036). Three independently-toggleable strategy modules, ATR or
    fixed-pip stops, paper (simulated) or real order execution, in-app
@@ -465,6 +484,32 @@ const state = {
   // orders just sent, matched against newly-confirmed real fills in
   // RECONCILE_RES to log the actual difference. See pipValueForSymbol().
   pendingRealOrders:[],
+  // New — real 2-candle confirmation on start: how many bars existed in
+  // state.bars the moment Start was pressed. Entry stays blocked until at
+  // least 2 MORE bars have closed since then, so the candle that was
+  // already open/already-closed-in-history at start time can never count
+  // toward the 2-candle confirmation — only fresh candles formed after
+  // pressing Start do.
+  gridBarsAtStart:0,
+  // New — profit-lock trail tracking: highest floating P&L this batch has
+  // reached so far (reset to 0 every time a fresh batch opens). Compared
+  // against the live floating value each tick to detect a giveback.
+  gridFloatingPeak:0,
+  // New — snapshot of the batch's floating P&L taken on the last tick it
+  // was confirmed open, so if it vanishes between one tick and the next
+  // (a stop-loss fill, a manual close) we still have a real number for how
+  // much was actually lost, instead of just guessing.
+  gridLastFloating:0,
+  // New — positionIds a grid batch close has already logged an accurate
+  // PnL for itself (see closeGridBatch()), so the generic per-position
+  // reconcile lower down doesn't ALSO log the same close again using a
+  // stale, recomputed market price — see the fix note there for why that
+  // was making session P&L look wrong after real grid wins.
+  gridJustClosedIds:[],
+  // Volume actually used for the batch currently open, so closeGridBatch()
+  // can report accurate total lots without depending on computeLots()
+  // possibly having changed (balance-scaled sizing) since the batch opened.
+  gridBatchVolumePerLeg:0,
 };
 
 const settings = {
@@ -514,6 +559,12 @@ const settings = {
   // is whatever the broker's own execution actually reports, logged
   // honestly in RECONCILE_RES instead of simulated.
   paperSlippagePips:0.3,
+  // New — profit-lock trail: while a batch is floating positive but hasn't
+  // hit its TP yet, if it gives back this many dollars from its own peak,
+  // lock in what's left right now instead of risking it turn negative, then
+  // immediately flip into the direction that just took the money (the
+  // pullback proved that direction is where price actually wants to go).
+  gridTrailArmed:true, gridTrailGiveback:0.15,
 };
 
 const paperLines = {}; // positionId -> {sl, tp} price line objects, for removing on close
@@ -554,6 +605,73 @@ $('forgetLoginLink').addEventListener('click', (e) => {
   $('forgetLoginLink').style.display = 'none';
 });
 
+// ---- "Log in with cTrader" OAuth helper -----------------------------------
+// This page can't complete the code→token exchange itself (that call needs
+// the Client Secret sent server-side, and there's no server here) — so it
+// opens cTrader's real login page, catches the one-time code cTrader sends
+// back, and hands you a ready-to-run curl command for Termux instead.
+const OAUTH_PENDING_KEY = 'scalperbot_oauth_pending_v1';
+
+function redirectUriForThisPage(){
+  return window.location.origin + window.location.pathname;
+}
+function updateCtrLoginBtnState(){
+  const has = $('ctId').value.trim().length > 0;
+  $('ctrLoginBtn').disabled = !has;
+}
+$('ctId').addEventListener('input', updateCtrLoginBtnState);
+
+$('ctrLoginBtn').addEventListener('click', () => {
+  const clientId = $('ctId').value.trim();
+  const clientSecret = $('ctSec').value.trim();
+  if(!clientId) return;
+  const redirectUri = redirectUriForThisPage();
+  localStorage.setItem(OAUTH_PENDING_KEY, JSON.stringify({ clientId, clientSecret, redirectUri }));
+  const authUrl = 'https://id.ctrader.com/my/settings/openapi/grantingaccess/'
+    + '?client_id=' + encodeURIComponent(clientId)
+    + '&redirect_uri=' + encodeURIComponent(redirectUri)
+    + '&scope=trading&product=web';
+  window.location.href = authUrl;
+});
+
+function checkForOAuthCode(){
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  if(!code) return;
+
+  let pending = {};
+  try { pending = JSON.parse(localStorage.getItem(OAUTH_PENDING_KEY) || '{}'); } catch(e) {}
+  const clientId = pending.clientId || $('ctId').value.trim() || 'YOUR_CLIENT_ID';
+  const clientSecret = pending.clientSecret || $('ctSec').value.trim() || 'YOUR_CLIENT_SECRET';
+  const redirectUri = pending.redirectUri || redirectUriForThisPage();
+
+  if(pending.clientId && !$('ctId').value.trim()) $('ctId').value = pending.clientId;
+  if(pending.clientSecret && !$('ctSec').value.trim()) $('ctSec').value = pending.clientSecret;
+
+  const cmd = "curl -sX GET 'https://openapi.ctrader.com/apps/token?grant_type=authorization_code&code="
+    + code + "&redirect_uri=" + encodeURIComponent(redirectUri)
+    + "&client_id=" + encodeURIComponent(clientId)
+    + "&client_secret=" + encodeURIComponent(clientSecret)
+    + "' -H 'Accept: application/json' -H 'Content-Type: application/json'";
+
+  $('codeCmd').value = cmd;
+  $('codePanel').style.display = 'block';
+  localStorage.removeItem(OAUTH_PENDING_KEY);
+
+  // Clean the ?code= off the address bar so a refresh doesn't re-trigger this.
+  window.history.replaceState(null, '', redirectUri);
+}
+$('copyCmdBtn').addEventListener('click', () => {
+  const ta = $('codeCmd');
+  ta.select(); ta.setSelectionRange(0, 99999);
+  const done = () => { $('copyCmdBtn').textContent = 'Copied ✓'; setTimeout(() => $('copyCmdBtn').textContent = 'Copy command', 1500); };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(ta.value).then(done).catch(() => { document.execCommand('copy'); done(); });
+  } else {
+    document.execCommand('copy'); done();
+  }
+});
+
 function loadSavedSettings(){
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -572,6 +690,8 @@ function loadSavedSettings(){
   $('cfgGridRsiOS').value = settings.gridRsiOversold;
   $('cfgGridRsiOB').value = settings.gridRsiOverbought;
   $('cfgGridEntryMode').value = settings.gridEntryMode;
+  $('cfgGridTrailArmed').checked = settings.gridTrailArmed;
+  $('cfgGridTrailGiveback').value = settings.gridTrailGiveback;
   $('cfgAtrPeriod').value = settings.atrPeriod;
   $('cfgAtrSlMult').value = settings.atrSlMult;
   $('cfgAtrTpMult').value = settings.atrTpMult;
@@ -605,6 +725,8 @@ function saveSettingsFromForm(){
   settings.gridRsiOversold = Math.min(50, Math.max(1, parseFloat($('cfgGridRsiOS').value) || 30));
   settings.gridRsiOverbought = Math.max(50, Math.min(99, parseFloat($('cfgGridRsiOB').value) || 70));
   settings.gridEntryMode = $('cfgGridEntryMode').value === 'reversal' ? 'reversal' : 'momentum';
+  settings.gridTrailArmed = $('cfgGridTrailArmed').checked;
+  settings.gridTrailGiveback = Math.max(0.01, parseFloat($('cfgGridTrailGiveback').value) || 0.15);
   settings.atrPeriod = Math.max(2, parseInt($('cfgAtrPeriod').value, 10) || 14);
   settings.atrSlMult = parseFloat($('cfgAtrSlMult').value) || 1.5;
   settings.atrTpMult = parseFloat($('cfgAtrTpMult').value) || 2.5;
@@ -642,10 +764,12 @@ $('saveSettingsBtn').addEventListener('click', saveSettingsFromForm);
 
 loadSavedLogin();
 loadSavedSettings();
+updateCtrLoginBtnState();
+checkForOAuthCode();
 
 function updateActiveCardLabel(){
   $('activeCard').classList.toggle('paper', settings.paperMode);
-  $('activeCardName').textContent = 'EDGE SCALPER — Pepperstone' + (settings.paperMode ? ' (Paper)' : '');
+  $('activeCardName').textContent = 'EDGE SCALPER — Deriv' + (settings.paperMode ? ' (Paper)' : '');
 }
 
 // ---- connection -----------------------------------------------------
@@ -918,6 +1042,13 @@ function handleMessage(m){
         const closedNow = oldPositions.filter(x => !stillOpenIds.has(x.positionId));
         const marketPrice = state.bid && state.ask ? (state.bid+state.ask)/2 : null;
         closedNow.forEach(pos => {
+          // Grid already logged this exact position's accurate PnL itself,
+          // right when it decided to close the batch — see the fix note in
+          // closeGridBatch(). Re-logging it here with a recomputed price
+          // from whenever this reconcile happens to run is what was making
+          // session P&L look wrong right after real grid wins.
+          const loggedIdx = state.gridJustClosedIds.indexOf(pos.positionId);
+          if(loggedIdx !== -1){ state.gridJustClosedIds.splice(loggedIdx, 1); return; }
           const td = pos.tradeData || {};
           const side = td.tradeSide === 1 ? 'buy' : 'sell';
           const entry = pos.price;
@@ -1048,7 +1179,7 @@ function switchSymbol(symbolId, symbolName){
 // ---- weekend / market-hours awareness ------------------------------------
 // Heuristic, not broker-confirmed: standard FX/metals sessions close
 // Friday ~21:00 UTC and reopen Sunday ~21:00-22:00 UTC (exact time shifts
-// slightly with daylight saving — check Pepperstone's own hours page if you
+// slightly with daylight saving — check Deriv's own hours page if you
 // need the precise cutoff). Crypto CFDs generally trade 24/7 regardless.
 const CRYPTO_HINTS = ['BTC','ETH','XRP','LTC','SOL','DOGE','ADA','BNB','DOT','MATIC'];
 function isLikelyCrypto(symbolName){
@@ -1068,7 +1199,7 @@ function updateWeekendBanner(){
   const banner = $('weekendBanner');
   if(isForexWeekendClosure()){
     banner.style.display = 'block';
-    banner.textContent = "It's the weekend — forex and metals markets are closed. Only crypto pairs (BTC, ETH, etc.) are tradable until they reopen (approx. Sunday ~21:00 UTC — check Pepperstone's exact hours).";
+    banner.textContent = "It's the weekend — forex and metals markets are closed. Only crypto pairs (BTC, ETH, etc.) are tradable until they reopen (approx. Sunday ~21:00 UTC — check Deriv's exact hours).";
   } else {
     banner.style.display = 'none';
   }
@@ -1485,6 +1616,9 @@ function openGridBatch(side, level, label){
   state.gridBatchConfirmed = false; // reset — see checkGridBatchExit()'s fix note on why this matters
   state.gridBatchSide = side;
   state.gridBatchLevel = level;
+  state.gridFloatingPeak = 0; // fresh batch — its own trail-lock peak starts over
+  state.gridLastFloating = 0;
+  state.gridBatchVolumePerLeg = volumeForStep;
   addTradeMarker(side, null, (side==='sell'?'SHORT':'LONG') + (level>1?' x'+level:''));
   return true;
 }
@@ -1493,6 +1627,27 @@ function closeGridBatch(){
   if(settings.paperMode){
     state.paperPositions.filter(p => p.isGrid).forEach(p => closePaperPosition(p.id));
   } else {
+    // FIX ("session p&l are going down instead of adding up... stuck on
+    // the same amount for a long time yet the bot is making money"): this
+    // logs the batch's real combined PnL right now, using the live
+    // floating value we just computed to decide to close it — the actual,
+    // accurate number. Previously nothing logged this at all; a separate,
+    // generic bit of code further down only found out later that these
+    // positions had vanished, and re-priced them using WHATEVER the market
+    // price happened to be at that later moment — often several ticks
+    // after the real close, sometimes enough for price to have moved back
+    // and turned a real win into a logged loss. That generic code is now
+    // told to skip these exact positionIds (gridJustClosedIds) instead of
+    // double-logging them with a worse number.
+    const batchPnl = gridFloatingPnl();
+    const level = state.gridPositionIds.length;
+    if(level > 0){
+      const totalLots = ((state.gridBatchVolumePerLeg || 0) * level / (state.symbolLotUnits || 1)).toFixed(2);
+      state.paperHistory.unshift({ side: state.gridBatchSide, entry: null, exit: null, lots: totalLots, pnl: batchPnl, reason: 'grid batch, real', closedAt: Date.now() });
+      if(state.paperHistory.length > 50) state.paperHistory.pop();
+      log('Grid batch closed — PnL ' + (batchPnl >= 0 ? '+' : '') + batchPnl.toFixed(2) + ' (real, batch total, ' + level + (level===1?' position':' positions') + ').');
+      state.gridJustClosedIds.push(...state.gridPositionIds);
+    }
     state.gridPositionIds.slice().forEach(id => {
       const pos = state.positions.find(x => x.positionId === id);
       if(pos) closeRealPosition(pos.positionId, (pos.tradeData||{}).volume || 0);
@@ -1526,14 +1681,23 @@ function checkGridBatchExit(){
   // AFTER it has actually seen this batch's positions confirmed open at
   // least once (state.gridBatchConfirmed) — before that, zero just means
   // "still waiting on the broker", so it does nothing and waits.
-  if(openNow > 0) state.gridBatchConfirmed = true;
+  if(openNow > 0){
+    state.gridBatchConfirmed = true;
+    // Snapshot floating P&L on every tick the batch is confirmed open, so
+    // if it vanishes unexpectedly between this tick and the next (a stop
+    // fill, a manual close), handleGridLoss() below still has a real
+    // number for how much was actually lost instead of guessing.
+    state.gridLastFloating = gridFloatingPnl();
+    if(state.gridLastFloating > state.gridFloatingPeak) state.gridFloatingPeak = state.gridLastFloating;
+  }
   if(openNow === 0){
     if(!state.gridBatchConfirmed) return; // still waiting on the broker to confirm — not a closure
-    log('Grid batch closed outside the normal exit path (manual close or a stop) — treating as a loss.');
+    const lostAmount = Math.min(0, state.gridLastFloating);
+    log('Grid batch closed outside the normal exit path (manual close or a stop) — treating as a loss' + (lostAmount < 0 ? ' of about $' + Math.abs(lostAmount).toFixed(2) : '') + '.');
     state.gridBatchOpen = false;
     state.gridBatchConfirmed = false;
     state.gridPositionIds = [];
-    handleGridLoss();
+    handleGridLoss(lostAmount);
     return;
   }
   // FIX (per your latest message): back to each position carrying its own
@@ -1546,6 +1710,7 @@ function checkGridBatchExit(){
   // more positions open, the higher the combined target, exactly "the
   // more the positions, the higher the tp in floating p&l".
   const floating = gridFloatingPnl();
+  if(floating > state.gridFloatingPeak) state.gridFloatingPeak = floating;
   const target = gridBatchTarget(state.gridBatchLevel);
   if(floating >= target){
     log('Grid batch level ' + state.gridBatchLevel + ' (' + state.gridBatchLevel + (state.gridBatchLevel===1?' position':' positions') + ') hit its target (+' + floating.toFixed(2) + ' >= $' + target.toFixed(2) + ') — closing all together.');
@@ -1590,10 +1755,32 @@ function checkGridBatchExit(){
       state.gridSameCandleContinued = false;
       log('Grid: back to normal — watching for a fresh confirmed signal to see if it continues ' + (wonSide==='sell'?'bearish':'bullish') + ' or reverses, before firing again.');
     }
+  } else if(settings.gridTrailArmed && state.gridFloatingPeak > 0 && (state.gridFloatingPeak - floating) >= settings.gridTrailGiveback){
+    // New — profit-lock trail ("grab those small profits that float...
+    // before the market pulls back to negative again"): the batch was
+    // floating positive at some point but pulled back from its own peak
+    // before ever reaching the real TP. Lock in whatever's left right now
+    // rather than risk it, then immediately flip into the direction that
+    // just took the money — a pullback against an open position IS price
+    // moving the other way, so that's the side to follow.
+    log('Grid trail-lock: floating profit pulled back $' + (state.gridFloatingPeak - floating).toFixed(2) + ' from its peak of +$' + state.gridFloatingPeak.toFixed(2) + ' before reaching the +$' + target.toFixed(2) + ' TP — locking it in now.');
+    const wonSide = state.gridBatchSide;
+    const levelJustClosed = state.gridBatchLevel;
+    const wasRecovery = state.gridIsRecovery;
+    closeGridBatch();
+    const flipSide = wonSide === 'buy' ? 'sell' : 'buy';
+    log('Grid trail-lock: firing ' + (flipSide==='buy'?'LONG':'SHORT') + ' x' + levelJustClosed + ' immediately — following the reversal that just took the profit.');
+    openGridBatch(flipSide, levelJustClosed, 'trail-lock flip — following the reversal that took the profit');
+    if(wasRecovery){
+      log('Grid recovery ended via trail-lock — back to normal after this flip resolves.');
+      state.gridIsRecovery = false;
+    }
+    state.gridConfirmedDirection = flipSide;
+    state.gridSameCandleContinued = true; // this flip doesn't need fresh confirmation, but a further one after it does
   } else if(settings.gridMaxDrawdown > 0 && floating <= -settings.gridMaxDrawdown){
     log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the batch.');
     closeGridBatch();
-    handleGridLoss();
+    handleGridLoss(floating);
   }
 }
 
@@ -1604,9 +1791,8 @@ function checkGridBatchExit(){
 // recovery that ALSO loses immediately flipping again into a runaway
 // martingale chain) — if the recovery itself loses, it resets fully to
 // level 1 and waits for a real confirmed signal like normal.
-function handleGridLoss(){
+function handleGridLoss(lostAmount){
   const lostSide = state.gridBatchSide;
-  const lostLevel = state.gridBatchLevel;
   const wasRecovery = state.gridIsRecovery;
   state.gridConfirmedDirection = null;
   state.gridSameCandleContinued = false;
@@ -1618,10 +1804,24 @@ function handleGridLoss(){
     return;
   }
 
+  // FIX ("it should always calculate how many positions it needs to fire
+  // ... to recover all the amount it losses immediately" — this was just
+  // reusing the same position count that lost, whose own target is often
+  // far smaller than what was actually lost, e.g. a level-2 batch losing
+  // $6 then "recovering" with a level-2 target of only $1). Each position
+  // always carries its own fixed $0.50 TP (see gridBatchTarget), so the
+  // number of positions whose COMBINED target actually clears the real
+  // dollar loss is ceil(lossAbs / 0.50) — capped at gridMaxLevels since
+  // that's the ladder's own hard safety ceiling on position count.
+  const lossAbs = Math.abs(Math.min(0, lostAmount || 0));
+  let recoveryLevel = lossAbs > 0 ? Math.ceil(lossAbs / 0.5) : state.gridBatchLevel;
+  const cappedByMax = recoveryLevel > settings.gridMaxLevels;
+  recoveryLevel = Math.max(1, Math.min(recoveryLevel, settings.gridMaxLevels));
+
   const recoverySide = lostSide === 'buy' ? 'sell' : 'buy';
-  log('Grid recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + lostLevel + ' immediately, no confirmation wait, to recover the loss.');
+  log('Grid recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + recoveryLevel + ' immediately, no confirmation wait, to recover the $' + lossAbs.toFixed(2) + ' loss (batch target +$' + gridBatchTarget(recoveryLevel).toFixed(2) + ')' + (cappedByMax ? ' — capped at max grid levels, may need another round to fully clear it' : '') + '.');
   state.gridIsRecovery = true;
-  openGridBatch(recoverySide, lostLevel, 'recovery — immediate flip after a loss, no confirmation wait');
+  openGridBatch(recoverySide, recoveryLevel, 'recovery — immediate flip after a loss, no confirmation wait');
 }
 
 // Only acts on a CLOSED candle (barClosed) — a candlestick pattern is
@@ -1640,6 +1840,10 @@ function checkGridBatchEntry(barClosed){
   }
   if(!settings.paperMode && !state.symbolFullLoaded) return;
   if(isForexWeekendClosure() && !isLikelyCrypto(state.symbol)) return;
+  if(state.bars.length < state.gridBarsAtStart + 2){
+    log('[Grid] Warming up — waiting for ' + (state.gridBarsAtStart + 2 - state.bars.length) + ' more fresh candle(s) since Start before the first confirmation can count.');
+    return;
+  }
 
   // FIX ("nothing is even moving in the signal box anymore... i used to
   // see the bot telling me RSI and EMA"): Grid mode never calls
@@ -2356,7 +2560,25 @@ function updateDashboard(){
 }
 setInterval(updateDashboard, 3000);
 
-$('stopBtn').addEventListener('click', () => { state.running = !state.running; updateDashboard(); });
+$('stopBtn').addEventListener('click', () => {
+  state.running = !state.running;
+  if(state.running){
+    // FIX ("bot only waits for that candle that was already open on the
+    // chart to close then it fires trades — wrong"): checkGridBatchEntry
+    // was reading the last 2 entries of state.bars, which already contains
+    // whatever historical candles were loaded before Start was even
+    // pressed. So pressing Start right after one of those old candles
+    // closed the same direction as the very next candle was enough to
+    // count as "2 confirmed candles" — no fresh confirmation actually
+    // happened. Now Start remembers how many bars existed at this exact
+    // moment; entry stays blocked until at least 2 MORE have closed since,
+    // guaranteeing both confirmation candles are brand new.
+    state.gridBarsAtStart = state.bars.length;
+    state.gridConfirmedDirection = null;
+    state.gridSameCandleContinued = false;
+  }
+  updateDashboard();
+});
 $('removeBtn').addEventListener('click', () => {
   if(!confirm('Disconnect and remove the bot?')) return;
   state.manualDisconnect = true;
