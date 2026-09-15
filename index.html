@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Scalper Console — Pepperstone / cTrader</title>
+<title>Scalper Console — Deriv / cTrader</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root{
@@ -137,6 +137,7 @@
       <div class="field">
         <label>Access Token</label>
         <input type="password" id="ctTok" placeholder="paste access token">
+        <button type="button" id="newTokenBtn" style="margin-top:8px; width:100%; background:#0d1117; color:#fff; border:none; border-radius:8px; padding:8px; font-size:12px; font-weight:600; cursor:pointer;">🔄 Get new access token</button>
       </div>
       <div class="field">
         <label><input type="checkbox" id="ctPaper" style="width:auto;display:inline;margin-right:6px;">Start in Paper mode (simulated trades, no real orders)</label>
@@ -144,17 +145,18 @@
       <div class="field">
         <label>Broker</label>
         <div class="platform-row">
-          <div class="glyph">PS</div>
-          <span style="color:var(--text-dark);font-weight:600;font-size:15px;">Pepperstone (cTrader)</span>
+          <div class="glyph">DV</div>
+          <span style="color:var(--text-dark);font-weight:600;font-size:15px;">Deriv (cTrader)</span>
         </div>
       </div>
       <button class="connect-btn" id="connectBtn">Connect account</button>
     </div>
 
-    <div class="hint">Connects straight from this page to cTrader's own servers. Nothing routes through a third-party bridge.</div>
+    <div class="hint">Connects straight from this page to cTrader's own servers — the same backend Deriv cTrader accounts run on. Nothing routes through a third-party bridge.</div>
     <a class="setup-link" href="https://openapi.ctrader.com" target="_blank">Need a Client ID/Secret? Register a free app at openapi.ctrader.com →</a>
     <a class="setup-link" href="#" id="forgetLoginLink" style="display:none;">Forget saved login on this device</a>
     <div class="error-line" id="errorLine"></div>
+    <div class="error-line" id="tokenStatusLine" style="color:#8a93a6;"></div>
   </div>
 
   <!-- DASHBOARD SCREEN -->
@@ -163,7 +165,7 @@
       <div class="eyebrow">THIS IS AN INTRADAY TRADING ROBOT</div>
       <div class="bot-badge">🦅</div>
       <div class="bot-name">EDGE SCALPER</div>
-      <div class="bot-sub">Pepperstone · cTrader · EMA/RSI/BB/Structure</div>
+      <div class="bot-sub">Deriv · cTrader · EMA/RSI/BB/Structure</div>
       <div class="env-switch">
         <button class="env-btn" id="envDemoBtn">DEMO</button>
         <button class="env-btn" id="envLiveBtn">LIVE</button>
@@ -177,8 +179,8 @@
     </div>
 
     <div class="active-card" id="activeCard">
-      <div class="glyph">PS</div>
-      <div class="name" id="activeCardName">EDGE SCALPER — Pepperstone</div>
+      <div class="glyph">DV</div>
+      <div class="name" id="activeCardName">EDGE SCALPER — Deriv</div>
       <div class="check">✓</div>
     </div>
 
@@ -242,6 +244,39 @@
         <label>Flip on TP — immediately fire the opposite side the instant a TP closes</label>
         <input type="checkbox" id="cfgFlipOnTP" style="width:auto;">
       </div>
+
+      <div class="settings-section">Profit protection (lock-in + reverse)</div>
+      <div class="toggle-row">
+        <label>Enabled — once floating profit reaches the "arm" level below, it starts watching. If price pulls back before hitting your real TP, it closes right there (giving back at most the "giveback" amount) and immediately opens the opposite direction on the same tick. If price keeps going and hits your real TP instead, this never fires — the normal TP/SL above still runs exactly as before.</label>
+        <input type="checkbox" id="cfgProfitLockEnabled" style="width:auto;">
+      </div>
+      <div class="field">
+        <label>Arm level ($) — floating profit that turns protection on for the open position/batch</label>
+        <input type="number" id="cfgProfitLockArm" step="0.01" value="0.38">
+      </div>
+      <div class="field">
+        <label>Giveback ($) — how much profit it's allowed to hand back from the arm level before it locks in and reverses (arm $0.38, giveback $0.08 → closes the instant floating profit drops to $0.30)</label>
+        <input type="number" id="cfgProfitLockGiveback" step="0.01" value="0.08">
+      </div>
+
+      <div class="settings-section">Loss recovery sizing</div>
+      <div class="toggle-row">
+        <label>Enabled — HONEST LIMIT, read before turning this on: this sizes the next round bigger (more positions) after a loss so that hitting the normal TP recovers everything lost so far plus a little extra. It does NOT and CANNOT guarantee the account always recovers or always grows — that's not something any position-sizing formula can promise in a real market. If losses keep coming, position count keeps climbing (this is a martingale) until it hits the caps below, and past that cap losses are NOT fully recovered — they stay as real, unrecovered loss. Bigger caps recover more but risk more; smaller caps risk less but may leave a losing streak only partially recovered. There is no setting that removes this trade-off.</label>
+        <input type="checkbox" id="cfgRecoveryEnabled" style="width:auto;">
+      </div>
+      <div class="field">
+        <label>Target extra profit ($) on top of the pool — a fully recovered round nets this much, not just breakeven</label>
+        <input type="number" id="cfgRecoveryTargetProfit" step="0.01" value="0.10">
+      </div>
+      <div class="field">
+        <label>Max positions per recovery round (hard cap, regardless of the math)</label>
+        <input type="number" id="cfgRecoveryMaxPositions" step="1" value="8">
+      </div>
+      <div class="field">
+        <label>Max total risk per recovery round (% of balance) — since each position's stop-loss $ amount is fixed by the SL field above, position count × that $ amount is capped to this % of your current balance</label>
+        <input type="number" id="cfgRecoveryMaxBalancePercent" step="1" value="25">
+      </div>
+
       <div class="field">
         <label>ATR period / SL multiplier / TP multiplier</label>
         <input type="number" id="cfgAtrPeriod" step="1" value="14" style="margin-bottom:4px;">
@@ -346,6 +381,7 @@
       <div class="metric"><div class="label">Floating P&L (open trades only)</div><div class="value" id="metPnl">—</div></div>
       <div class="metric"><div class="label">Session P&L (all closed trades)</div><div class="value" id="metSessionPnl">+0.00</div></div>
       <div class="metric"><div class="label">Open trades</div><div class="value" id="metTrades">0</div></div>
+      <div class="metric"><div class="label">Unrecovered loss pool</div><div class="value" id="metRecoveryPool">$0.00</div></div>
     </div>
 
     <div class="settings-section" style="margin-top:10px;">
@@ -365,7 +401,7 @@
 
 <script>
 /* =========================================================================
-   PEPPERSTONE / cTRADER SCALPING BOT
+   DERIV / cTRADER SCALPING BOT
    Connects directly to cTrader's Open API over WebSocket (JSON protocol,
    port 5036). Three independently-toggleable strategy modules, ATR or
    fixed-pip stops, paper (simulated) or real order execution, in-app
@@ -465,6 +501,20 @@ const state = {
   // orders just sent, matched against newly-confirmed real fills in
   // RECONCILE_RES to log the actual difference. See pipValueForSymbol().
   pendingRealOrders:[],
+  // New feature — Profit protection (lock-in + reverse). Armed once the
+  // CURRENTLY open position/batch's floating profit first touches
+  // settings.profitLockArm; stays armed (even if profit dips and climbs
+  // again) until either it locks in (closes + reverses) or the position
+  // closes some other way (real TP/SL, manual close) — either of which
+  // clears it below. profitLockSide remembers which direction was open at
+  // arm time, purely so the reversal knows which way to flip.
+  profitLockArmed:false, profitLockSide:null,
+  // New feature — Loss recovery sizing. recoveryLossPool is the running
+  // total (dollars) of net losses not yet recovered — only accumulated
+  // while settings.recoveryEnabled is on (see computeRecoveryLevel() and
+  // the pool-adjustment calls next to every close path for the full
+  // picture, and the honest caveats in its own comment block).
+  recoveryLossPool:0,
 };
 
 const settings = {
@@ -496,6 +546,26 @@ const settings = {
   structureEnabled:false, structureLookback:20,
   paperMode:true, maxOpenTrades:3,
   flipOnTP:false, // new feature — see maybeFlipAfterTP() below
+  // New feature — Profit protection (lock-in + reverse). See
+  // checkProfitLock() for the full behavior. profitLockArm and
+  // profitLockGiveback are both in dollars, same units as the SL/TP
+  // fields above; giveback should always be smaller than arm.
+  profitLockEnabled:false, profitLockArm:0.38, profitLockGiveback:0.08,
+  // New feature — Loss recovery sizing. See computeRecoveryLevel()'s own
+  // comment for exactly what this does and does NOT guarantee.
+  // recoveryTargetProfit: extra $ aimed for on top of clearing the pool,
+  // so a successful recovery round nets a small gain, not just breakeven.
+  // recoveryMaxPositions: hard ceiling on how many positions a single
+  // recovery round can stack, independent of the math below — this is
+  // the main brake against runaway sizing.
+  // recoveryMaxBalancePercent: caps recovery sizing so the TOTAL dollar
+  // risk if every recovery position hit its stop-loss (level *
+  // stopLossDollars) never exceeds this % of current balance — since
+  // stop-loss dollars are fixed per position by design (see
+  // getStopDistances() above) regardless of lot size, position COUNT is
+  // what actually controls total risk here, which is why this caps count
+  // directly instead of guessing at margin/leverage.
+  recoveryEnabled:false, recoveryTargetProfit:0.10, recoveryMaxPositions:8, recoveryMaxBalancePercent:25,
   gridEnabled:false, gridMaxLevels:6, gridMaxDrawdown:15,
   // FIX ("bot showing another amount, broker showing another amount" —
   // still, after the bid/ask and staleness fixes): the remaining gap in
@@ -566,6 +636,13 @@ function loadSavedSettings(){
   $('cfgSL').value = settings.stopLossDollars;
   $('cfgTP').value = settings.takeProfitDollars;
   $('cfgFlipOnTP').checked = settings.flipOnTP;
+  $('cfgProfitLockEnabled').checked = settings.profitLockEnabled;
+  $('cfgProfitLockArm').value = settings.profitLockArm;
+  $('cfgProfitLockGiveback').value = settings.profitLockGiveback;
+  $('cfgRecoveryEnabled').checked = settings.recoveryEnabled;
+  $('cfgRecoveryTargetProfit').value = settings.recoveryTargetProfit;
+  $('cfgRecoveryMaxPositions').value = settings.recoveryMaxPositions;
+  $('cfgRecoveryMaxBalancePercent').value = settings.recoveryMaxBalancePercent;
   $('cfgGridEnabled').checked = settings.gridEnabled;
   $('cfgGridMaxLevels').value = settings.gridMaxLevels;
   $('cfgGridMaxDD').value = settings.gridMaxDrawdown;
@@ -599,6 +676,13 @@ function saveSettingsFromForm(){
   settings.stopLossDollars = parseFloat($('cfgSL').value) || 5;
   settings.takeProfitDollars = parseFloat($('cfgTP').value) || 0.50;
   settings.flipOnTP = $('cfgFlipOnTP').checked;
+  settings.profitLockEnabled = $('cfgProfitLockEnabled').checked;
+  settings.profitLockArm = Math.max(0.01, parseFloat($('cfgProfitLockArm').value) || 0.38);
+  settings.profitLockGiveback = Math.max(0, Math.min(settings.profitLockArm - 0.01, parseFloat($('cfgProfitLockGiveback').value) || 0.08));
+  settings.recoveryEnabled = $('cfgRecoveryEnabled').checked;
+  settings.recoveryTargetProfit = Math.max(0, parseFloat($('cfgRecoveryTargetProfit').value) || 0.10);
+  settings.recoveryMaxPositions = Math.max(1, parseInt($('cfgRecoveryMaxPositions').value, 10) || 8);
+  settings.recoveryMaxBalancePercent = Math.min(100, Math.max(1, parseFloat($('cfgRecoveryMaxBalancePercent').value) || 25));
   settings.gridEnabled = $('cfgGridEnabled').checked;
   settings.gridMaxLevels = Math.max(1, parseInt($('cfgGridMaxLevels').value, 10) || 6);
   settings.gridMaxDrawdown = Math.max(0, parseFloat($('cfgGridMaxDD').value) || 0);
@@ -630,6 +714,8 @@ function saveSettingsFromForm(){
     + ' | Confluence:' + (settings.confluenceEnabled?'on':'off')
     + ' RSI-extreme:' + (settings.rsiExtremeEnabled?'on':'off')
     + ' Structure:' + (settings.structureEnabled?'on':'off')
+    + ' | Profit-lock: ' + (settings.profitLockEnabled ? ('ON (arm $'+settings.profitLockArm+' / giveback $'+settings.profitLockGiveback+')') : 'off')
+    + ' | Recovery: ' + (settings.recoveryEnabled ? ('ON (max '+settings.recoveryMaxPositions+' pos / '+settings.recoveryMaxBalancePercent+'% bal, pool $'+state.recoveryLossPool.toFixed(2)+')') : 'off')
     + ' | Stops: ' + (settings.atrEnabled ? 'ATR('+settings.atrPeriod+') x'+settings.atrSlMult+'/'+settings.atrTpMult : '$'+settings.stopLossDollars+'/$'+settings.takeProfitDollars));
   updateActiveCardLabel();
   $('settingsPanel').style.display = 'none';
@@ -645,7 +731,7 @@ loadSavedSettings();
 
 function updateActiveCardLabel(){
   $('activeCard').classList.toggle('paper', settings.paperMode);
-  $('activeCardName').textContent = 'EDGE SCALPER — Pepperstone' + (settings.paperMode ? ' (Paper)' : '');
+  $('activeCardName').textContent = 'EDGE SCALPER — Deriv' + (settings.paperMode ? ' (Paper)' : '');
 }
 
 // ---- connection -----------------------------------------------------
@@ -710,6 +796,118 @@ function connect(){
   connectWithCreds({ clientId, clientSecret, accessToken, env });
 }
 $('connectBtn').addEventListener('click', connect);
+
+// ---- get a new access token (cTrader OAuth2) ------------------------
+// HONEST LIMITS: this is real OAuth2 against cTrader's own endpoints
+// (https://connect.spotware.com/apps/auth to authorize, POST
+// https://openapi.ctrader.com/apps/token to exchange) — it works with any
+// cTrader-affiliated broker's account, Deriv cTrader included, since the
+// Open API and its OAuth flow are the same regardless of which broker the
+// account is with. Two things have to be true on YOUR end for it to work:
+//   1. The exact URL this page is running from right now must be added as
+//      a Redirect URI on your app at openapi.ctrader.com — cTrader
+//      rejects the redirect otherwise.
+//   2. The token exchange call in step 2 below is a POST straight from
+//      this page to openapi.ctrader.com — if their server doesn't allow
+//      cross-origin requests from wherever this file is hosted, the
+//      browser will block it (you'll see a CORS error in the console) and
+//      you'll need to do that one POST from a small server/proxy instead.
+// Neither of those is something this file can fix on its own — they're
+// account/hosting setup, not a bug in this code.
+const OAUTH_PENDING_KEY = 'scalperbot_oauth_pending_v1';
+const OAUTH_REFRESH_KEY = 'scalperbot_oauth_refresh_v1';
+function oauthRedirectUri(){
+  return location.origin + location.pathname;
+}
+async function exchangeToken(params){
+  const res = await fetch('https://openapi.ctrader.com/apps/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params)
+  });
+  const data = await res.json();
+  const accessToken = data.access_token || data.accessToken;
+  if(!accessToken) throw new Error(data.error_description || data.error || data.errorDescription || 'No access token in response.');
+  return { accessToken, refreshToken: data.refresh_token || data.refreshToken || null };
+}
+async function tryRefreshFlow(clientId, clientSecret){
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(OAUTH_REFRESH_KEY) || 'null'); } catch(e) { saved = null; }
+  if(!saved || saved.clientId !== clientId || !saved.refreshToken) return false;
+  try {
+    const { accessToken, refreshToken } = await exchangeToken({
+      grant_type: 'refresh_token', refresh_token: saved.refreshToken,
+      client_id: clientId, client_secret: clientSecret
+    });
+    $('ctTok').value = accessToken;
+    localStorage.setItem(OAUTH_REFRESH_KEY, JSON.stringify({ clientId, refreshToken: refreshToken || saved.refreshToken }));
+    $('tokenStatusLine').style.color = 'var(--ok)';
+    $('tokenStatusLine').textContent = 'New access token filled in — using your saved refresh token, no re-authorization needed.';
+    return true;
+  } catch(e) {
+    return false; // refresh token expired/invalid — fall back to the full redirect flow below
+  }
+}
+$('newTokenBtn').addEventListener('click', async () => {
+  const clientId = $('ctId').value.trim();
+  const clientSecret = $('ctSec').value.trim();
+  $('tokenStatusLine').textContent = '';
+  if(!clientId || !clientSecret){
+    $('tokenStatusLine').style.color = 'var(--danger)';
+    $('tokenStatusLine').textContent = 'Enter Client ID and Client Secret first — both are needed to get a token.';
+    return;
+  }
+  $('tokenStatusLine').style.color = '#8a93a6';
+  $('tokenStatusLine').textContent = 'Checking for a saved refresh token…';
+  if(await tryRefreshFlow(clientId, clientSecret)) return;
+
+  // No usable refresh token — do the full authorize redirect. cTrader
+  // needs the user to log in and approve on its own page, so this leaves
+  // the app; the code below picks the flow back up on return.
+  localStorage.setItem(OAUTH_PENDING_KEY, JSON.stringify({
+    clientId, clientSecret, env: $('ctEnv').value, paper: $('ctPaper').checked
+  }));
+  const authUrl = 'https://connect.spotware.com/apps/auth?client_id=' + encodeURIComponent(clientId)
+    + '&redirect_uri=' + encodeURIComponent(oauthRedirectUri())
+    + '&scope=trading&response_type=code';
+  location.href = authUrl;
+});
+// Landed back here from the authorize page with ?code=... in the URL —
+// finish the exchange automatically.
+(async function completeOAuthIfReturning(){
+  const params = new URLSearchParams(location.search);
+  const code = params.get('code');
+  if(!code) return;
+  let pending;
+  try { pending = JSON.parse(localStorage.getItem(OAUTH_PENDING_KEY) || 'null'); } catch(e) { pending = null; }
+  history.replaceState({}, document.title, location.pathname); // strip ?code= from the URL either way
+  if(!pending){
+    $('tokenStatusLine').style.color = 'var(--danger)';
+    $('tokenStatusLine').textContent = 'Got an authorization code back but lost track of the Client ID/Secret it belongs to (storage was cleared?) — click "Get new access token" again.';
+    return;
+  }
+  $('ctId').value = pending.clientId;
+  $('ctSec').value = pending.clientSecret;
+  $('ctEnv').value = pending.env || 'demo';
+  $('ctPaper').checked = !!pending.paper;
+  $('tokenStatusLine').style.color = '#8a93a6';
+  $('tokenStatusLine').textContent = 'Exchanging authorization code for an access token…';
+  try {
+    const { accessToken, refreshToken } = await exchangeToken({
+      grant_type: 'authorization_code', code,
+      redirect_uri: oauthRedirectUri(), client_id: pending.clientId, client_secret: pending.clientSecret
+    });
+    $('ctTok').value = accessToken;
+    if(refreshToken) localStorage.setItem(OAUTH_REFRESH_KEY, JSON.stringify({ clientId: pending.clientId, refreshToken }));
+    $('tokenStatusLine').style.color = 'var(--ok)';
+    $('tokenStatusLine').textContent = 'New access token filled in below — hit Connect account.';
+  } catch(e) {
+    $('tokenStatusLine').style.color = 'var(--danger)';
+    $('tokenStatusLine').textContent = 'Token exchange failed: ' + e.message + ' (see the console for the full response — often a redirect_uri mismatch or a CORS block).';
+  } finally {
+    localStorage.removeItem(OAUTH_PENDING_KEY);
+  }
+})();
 
 // Reconnect automatically if the tab comes back to the foreground and the
 // socket isn't open (covers phones that suspend background tabs/browsers).
@@ -925,6 +1123,7 @@ function handleMessage(m){
           if(entry == null || !marketPrice || !vol) return; // not enough data to estimate — skip rather than log a wrong number
           const priceDiff = side === 'buy' ? (marketPrice - entry) : (entry - marketPrice);
           const pnl = priceDiff * dollarPerUnitFor(vol);
+          applyRecoveryPnl(pnl);
           state.paperHistory.unshift({ side, entry, exit: marketPrice, lots: (vol/state.symbolLotUnits).toFixed(2), pnl, reason: 'real, est.', closedAt: Date.now() });
           if(state.paperHistory.length > 50) state.paperHistory.pop();
           log((side==='buy'?'LONG':'SHORT')+' '+state.symbol+' closed — PnL '+(pnl>=0?'+':'')+pnl.toFixed(2)+' (real, estimated)');
@@ -1048,7 +1247,7 @@ function switchSymbol(symbolId, symbolName){
 // ---- weekend / market-hours awareness ------------------------------------
 // Heuristic, not broker-confirmed: standard FX/metals sessions close
 // Friday ~21:00 UTC and reopen Sunday ~21:00-22:00 UTC (exact time shifts
-// slightly with daylight saving — check Pepperstone's own hours page if you
+// slightly with daylight saving — check Deriv's own hours page if you
 // need the precise cutoff). Crypto CFDs generally trade 24/7 regardless.
 const CRYPTO_HINTS = ['BTC','ETH','XRP','LTC','SOL','DOGE','ADA','BNB','DOT','MATIC'];
 function isLikelyCrypto(symbolName){
@@ -1068,7 +1267,7 @@ function updateWeekendBanner(){
   const banner = $('weekendBanner');
   if(isForexWeekendClosure()){
     banner.style.display = 'block';
-    banner.textContent = "It's the weekend — forex and metals markets are closed. Only crypto pairs (BTC, ETH, etc.) are tradable until they reopen (approx. Sunday ~21:00 UTC — check Pepperstone's exact hours).";
+    banner.textContent = "It's the weekend — forex and metals markets are closed. Only crypto pairs (BTC, ETH, etc.) are tradable until they reopen (approx. Sunday ~21:00 UTC — check Deriv's exact hours).";
   } else {
     banner.style.display = 'none';
   }
@@ -1339,6 +1538,8 @@ function onSpot(p){
   updateDashboard();
   syncPriceLines(); // per-position price lines on the chart itself — see its own comment
 
+  checkProfitLock(); // every tick, both grid and non-grid, paper and real — see its own comment above
+
   // Grid/Ladder mode is price-distance driven, not pattern driven like the
   // strategies below — it needs to react to raw price movement immediately
   // to get anywhere near the speed in that video, so it runs every tick,
@@ -1533,7 +1734,11 @@ function checkGridBatchExit(){
     state.gridBatchOpen = false;
     state.gridBatchConfirmed = false;
     state.gridPositionIds = [];
-    handleGridLoss();
+    // No exact fill data available on this path (see the file's other
+    // "real, est." notes) — estimate the loss as this batch's own fixed
+    // per-position stop-loss dollar amount × how many positions it had,
+    // since that's what SL was designed to cost regardless of lot size.
+    handleGridLoss(-(state.gridBatchLevel * settings.stopLossDollars));
     return;
   }
   // FIX (per your latest message): back to each position carrying its own
@@ -1549,6 +1754,7 @@ function checkGridBatchExit(){
   const target = gridBatchTarget(state.gridBatchLevel);
   if(floating >= target){
     log('Grid batch level ' + state.gridBatchLevel + ' (' + state.gridBatchLevel + (state.gridBatchLevel===1?' position':' positions') + ') hit its target (+' + floating.toFixed(2) + ' >= $' + target.toFixed(2) + ') — closing all together.');
+    applyRecoveryPnl(floating);
     const wonSide = state.gridBatchSide;
     const wasRecovery = state.gridIsRecovery;
     const alreadyContinued = state.gridSameCandleContinued;
@@ -1572,13 +1778,28 @@ function checkGridBatchExit(){
       && state.currentBar && state.gridConfirmedBarTime === state.currentBar.t;
 
     if(wasRecovery){
-      // A recovery attempt just WON — that's the full recovery, done.
-      // Back to fully normal: level 1, real confirmation required again.
-      log('Grid recovery trade won — back to normal.');
-      state.gridIsRecovery = false;
-      state.gridBatchLevel = 1;
-      state.gridConfirmedDirection = null;
-      state.gridSameCandleContinued = false;
+      if(settings.recoveryEnabled && state.recoveryLossPool > 0){
+        // Pool didn't fully clear (capped sizing, or this win was smaller
+        // than what was still owed) — keep going immediately, same
+        // direction that just worked, freshly sized off whatever's left,
+        // rather than declaring victory and quietly dropping the
+        // remaining, still-real loss.
+        const nextRecovery = computeRecoveryLevel();
+        log('Recovery round won +' + floating.toFixed(2) + ', but $' + state.recoveryLossPool.toFixed(2) + ' of the pool is still outstanding — firing another ' + nextRecovery.level + '-position round the same direction, same tick.');
+        state.gridBatchLevel = nextRecovery.level;
+        state.gridConfirmedDirection = null;
+        state.gridSameCandleContinued = false;
+        openGridBatch(wonSide, nextRecovery.level, 'recovery — pool still outstanding, continuing same direction');
+      } else {
+        // A recovery attempt just WON and the pool is clear — that's the
+        // full recovery, done. Back to fully normal: level 1, real
+        // confirmation required again.
+        log('Grid recovery trade won — back to normal.');
+        state.gridIsRecovery = false;
+        state.gridBatchLevel = 1;
+        state.gridConfirmedDirection = null;
+        state.gridSameCandleContinued = false;
+      }
     } else if(stillSameCandle && nextLevel > 1){
       const oppositeSide = wonSide === 'buy' ? 'sell' : 'buy';
       openGridBatch(oppositeSide, nextLevel, 'candle still open — pullback round, opposite direction (' + (oppositeSide==='sell'?'SHORT':'LONG') + ')');
@@ -1593,35 +1814,71 @@ function checkGridBatchExit(){
   } else if(settings.gridMaxDrawdown > 0 && floating <= -settings.gridMaxDrawdown){
     log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the batch.');
     closeGridBatch();
-    handleGridLoss();
+    handleGridLoss(floating);
   }
 }
 
-// New — recovery mode: "if it opens buys and hits a loss, immediately fire
-// the opposite direction with the SAME number of positions that just
-// lost, without waiting for the 2-candle confirmation — then go back to
-// the normal system." One shot only (gridIsRecovery guards against a
-// recovery that ALSO loses immediately flipping again into a runaway
-// martingale chain) — if the recovery itself loses, it resets fully to
-// level 1 and waits for a real confirmed signal like normal.
-function handleGridLoss(){
+// Recovery mode after a grid loss. Two behaviors depending on the new
+// Loss recovery sizing feature above:
+//   - recoveryEnabled OFF (original behavior, unchanged): one immediate
+//     flip at the SAME size that just lost, no confirmation wait; if that
+//     flip also loses, give up and reset fully to level 1.
+//   - recoveryEnabled ON: every loss adds to the shared pool
+//     (state.recoveryLossPool via applyRecoveryPnl), and each recovery
+//     round is sized by computeRecoveryLevel() from the CURRENT pool total
+//     — not just "whatever this one round lost" — so a string of losses
+//     keeps escalating (bounded by the caps in computeRecoveryLevel, which
+//     are the real brake here, not a one-shot limit). A round that wins
+//     applies its profit back against the pool via applyRecoveryPnl() in
+//     checkGridBatchExit() above; if that clears the pool to 0, recovery
+//     mode itself turns off below. If the pool is still > 0 (win too small
+//     or another loss), the next round fires again, freshly sized.
+function handleGridLoss(lossAmount){
   const lostSide = state.gridBatchSide;
-  const lostLevel = state.gridBatchLevel;
   const wasRecovery = state.gridIsRecovery;
   state.gridConfirmedDirection = null;
   state.gridSameCandleContinued = false;
+  applyRecoveryPnl(lossAmount);
 
-  if(wasRecovery || !lostSide){
-    log('Grid recovery trade also lost — resetting fully to level 1.');
+  if(!lostSide){
     state.gridIsRecovery = false;
     state.gridBatchLevel = 1;
     return;
   }
 
+  if(!settings.recoveryEnabled){
+    // Original one-shot behavior, untouched.
+    if(wasRecovery){
+      log('Grid recovery trade also lost — resetting fully to level 1.');
+      state.gridIsRecovery = false;
+      state.gridBatchLevel = 1;
+      return;
+    }
+    const recoverySide = lostSide === 'buy' ? 'sell' : 'buy';
+    log('Grid recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + state.gridBatchLevel + ' immediately, no confirmation wait, to recover the loss.');
+    state.gridIsRecovery = true;
+    openGridBatch(recoverySide, state.gridBatchLevel, 'recovery — immediate flip after a loss, no confirmation wait');
+    return;
+  }
+
+  // Loss recovery sizing is on: size THIS round off the whole pool, not
+  // just what this one round lost, and keep going (bounded by the caps)
+  // until the pool clears or the caps stop it.
+  if(state.recoveryLossPool <= 0){
+    state.gridIsRecovery = false;
+    state.gridBatchLevel = 1;
+    return;
+  }
   const recoverySide = lostSide === 'buy' ? 'sell' : 'buy';
-  log('Grid recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + lostLevel + ' immediately, no confirmation wait, to recover the loss.');
+  const recovery = computeRecoveryLevel();
+  if(recovery.capped){
+    log('⚠️ Recovery capped at ' + recovery.level + ' position(s) by your balance/risk settings (full recovery of the $' + state.recoveryLossPool.toFixed(2) + ' pool would need ' + recovery.fullRecoveryLevel + ') — firing what the caps allow; this round will NOT fully clear the pool even on a win.');
+  } else {
+    log('Recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + recovery.level + ' immediately, no confirmation wait, sized to clear the $' + state.recoveryLossPool.toFixed(2) + ' pool plus $' + settings.recoveryTargetProfit.toFixed(2) + ' if it wins.');
+  }
   state.gridIsRecovery = true;
-  openGridBatch(recoverySide, lostLevel, 'recovery — immediate flip after a loss, no confirmation wait');
+  state.gridBatchLevel = recovery.level;
+  openGridBatch(recoverySide, recovery.level, 'recovery — sized to the outstanding loss pool');
 }
 
 // Only acts on a CLOSED candle (barClosed) — a candlestick pattern is
@@ -1878,6 +2135,89 @@ function currentOpenSide(){
   return td.tradeSide === 1 ? 'buy' : 'sell';
 }
 
+// New feature — Profit protection (lock-in + reverse). Runs every tick
+// (called from onSpot, both grid and non-grid, paper and real). Behavior,
+// as specified: once the open position/batch's floating profit first
+// touches settings.profitLockArm, it "arms". From then on, if floating
+// profit pulls back down to (arm - giveback), it closes right there —
+// giving the market back at most `giveback` dollars — and immediately
+// opens the opposite direction. If instead price keeps moving in its
+// favor and hits the REAL take-profit first, this never fires at all —
+// checkPaperPositions()/the broker's own TP order close it the normal
+// way, same as if this feature didn't exist.
+function checkProfitLock(){
+  if(!settings.profitLockEnabled){
+    if(state.profitLockArmed){ state.profitLockArmed = false; state.profitLockSide = null; }
+    return;
+  }
+  const openCount = settings.gridEnabled
+    ? gridOpenCount()
+    : (settings.paperMode ? state.paperPositions.length : state.positions.length);
+  if(openCount <= 0){
+    if(state.profitLockArmed){ state.profitLockArmed = false; state.profitLockSide = null; }
+    return;
+  }
+  const side = currentOpenSide();
+  if(!side) return;
+  const floating = settings.gridEnabled ? gridFloatingPnl() : computeFloatingPnl();
+  // Arm/giveback scale with how many positions are actually open — a
+  // recovery round holding N positions moves N times as fast per tick of
+  // price, so a flat $0.38/$0.08 would arm and give back almost instantly
+  // on a big round. Scaling by openCount keeps the same "per position"
+  // behavior regardless of round size.
+  const armLevel = settings.profitLockArm * openCount;
+  const givebackLevel = settings.profitLockGiveback * openCount;
+
+  if(!state.profitLockArmed){
+    if(floating >= armLevel){
+      state.profitLockArmed = true;
+      state.profitLockSide = side;
+      log('🔒 Profit protection armed at +$' + floating.toFixed(2) + ' (' + openCount + ' pos) — will lock in and reverse if it gives back down to +$' + (armLevel - givebackLevel).toFixed(2) + '.');
+    }
+    return;
+  }
+
+  state.profitLockSide = side; // stay in sync in case it changed (direction-lock normally prevents this)
+  const lockLevel = armLevel - givebackLevel;
+  if(floating <= lockLevel){
+    const flipSide = state.profitLockSide === 'buy' ? 'sell' : 'buy';
+    log('🔒 Profit protection triggered — pulled back to +$' + floating.toFixed(2) + ' from the +$' + armLevel.toFixed(2) + ' arm level. Locking it in now and firing ' + (flipSide==='buy'?'LONG':'SHORT') + ' the other way, same tick.');
+    state.profitLockArmed = false;
+    state.profitLockSide = null;
+    lockInAndReverse(flipSide, floating);
+  }
+}
+
+function lockInAndReverse(flipSide, realizedPnl){
+  // Reset pyramid/batch bookkeeping the same way a manual close already
+  // does elsewhere in this file, so this doesn't distort the next round's
+  // sizing.
+  state.pyramidLevel = 1;
+  applyRecoveryPnl(realizedPnl); // a profit-lock close is always a win by construction (lockLevel > 0), so this only ever pays DOWN the pool, never adds to it
+  // If there's still an outstanding pool, size the reversal to keep
+  // chasing it (same honest caps as everywhere else); otherwise just 1.
+  const recovery = computeRecoveryLevel();
+  const nextLevel = Math.max(1, recovery.level);
+  if(settings.recoveryEnabled && state.recoveryLossPool > 0 && recovery.capped){
+    log('⚠️ Recovery capped at ' + nextLevel + ' position(s) after this profit-lock close — $' + state.recoveryLossPool.toFixed(2) + ' of the pool is still outstanding.');
+  }
+  if(settings.gridEnabled){
+    closeGridBatch();
+    state.gridBatchLevel = nextLevel;
+    // Fire the reversal immediately rather than waiting for the close
+    // above to be confirmed — paper mode's close is synchronous anyway,
+    // and real mode's close is just a request already in flight, same as
+    // every other same-tick reversal already in this file (see Flip on TP).
+    openGridBatch(flipSide, nextLevel, 'profit-lock reversal');
+  } else if(settings.paperMode){
+    [...state.paperPositions].forEach(p => closePaperPosition(p.id));
+    for(let i=0;i<nextLevel;i++) openPaperTrade(flipSide);
+  } else {
+    state.positions.forEach(p => closeRealPosition(p.positionId, p.tradeData ? p.tradeData.volume : 0));
+    for(let i=0;i<nextLevel;i++) placeOrder(flipSide);
+  }
+}
+
 function maybeTrade(signal){
   if(!state.running) return;
   const bal = settings.paperMode ? state.paperBalance : state.balance;
@@ -1919,9 +2259,23 @@ function maybeTrade(signal){
   // Staged pyramiding: starting flat, open 1; after a winning (TP) round in
   // the same direction, the next round opens 2, then 3, up to your max.
   // A stop-loss or a direction change resets back to 1.
+  // New — Loss recovery sizing takes over batch sizing whenever there's an
+  // outstanding pool (see computeRecoveryLevel()'s own comment for the
+  // caps and honest limits); it replaces the doubling pyramid above for
+  // this round only, not the pyramid state itself.
   let batchSize = 1;
   if(openCount === 0){
-    if(state.pyramidDirection === signal){
+    const recovery = computeRecoveryLevel();
+    if(state.recoveryLossPool > 0 && settings.recoveryEnabled){
+      batchSize = recovery.level;
+      state.pyramidDirection = signal;
+      state.pyramidLevel = batchSize;
+      if(recovery.capped){
+        log('⚠️ Recovery capped at ' + recovery.level + ' position(s) by your balance/risk settings (full recovery of the $' + state.recoveryLossPool.toFixed(2) + ' pool would need ' + recovery.fullRecoveryLevel + ') — this round will NOT fully clear it even on a win.');
+      } else {
+        log('Recovery: opening ' + recovery.level + ' position(s) to clear the $' + state.recoveryLossPool.toFixed(2) + ' pool plus $' + settings.recoveryTargetProfit.toFixed(2) + ' if this round wins.');
+      }
+    } else if(state.pyramidDirection === signal){
       batchSize = state.pyramidLevel;
     } else {
       state.pyramidDirection = signal;
@@ -1951,6 +2305,61 @@ function maybeTrade(signal){
   }
   state.lastSignalAt = Date.now();
 }
+// New feature — Loss recovery sizing. Computes how many positions the
+// NEXT round should open so that, if every one of them hits the normal
+// TP, the combined payout clears the outstanding loss pool plus a small
+// extra (settings.recoveryTargetProfit) — this is what answers "how many
+// positions does it need to recover the losses".
+//
+// HONEST LIMIT (also stated in the settings toggle's own label, worth
+// repeating here in the code): this is a martingale. The math below can
+// tell you the position count a FULL recovery would need; it cannot make
+// that count safe to actually open. Two caps are applied on top of the
+// math for exactly that reason:
+//   - recoveryMaxPositions: a flat ceiling, no matter what.
+//   - recoveryMaxBalancePercent: keeps level * stopLossDollars (the total
+//     you'd actually lose if EVERY position in the round hit its stop)
+//     under this % of current balance. Stop-loss dollars are fixed per
+//     position regardless of lot size (see getStopDistances() above), so
+//     position count is what controls total risk here.
+// When the pool is bigger than what those caps allow to recover in one
+// round, this returns the CAPPED (smaller) number — not the full-recovery
+// number — and the caller logs that plainly. A losing streak large enough
+// relative to your balance and risk caps will NOT be fully recovered by
+// this feature. That is the caps doing their job, not a bug.
+function computeRecoveryLevel(){
+  if(!settings.recoveryEnabled || state.recoveryLossPool <= 0) return { level:1, capped:false, fullRecoveryLevel:1 };
+  const perPositionProfit = settings.takeProfitDollars > 0 ? settings.takeProfitDollars : 0.5;
+  const needed = state.recoveryLossPool + settings.recoveryTargetProfit;
+  const fullRecoveryLevel = Math.max(1, Math.ceil(needed / perPositionProfit));
+  let level = fullRecoveryLevel;
+  const bal = settings.paperMode ? state.paperBalance : state.balance;
+  if(bal != null && settings.stopLossDollars > 0){
+    const maxByRisk = Math.max(1, Math.floor((bal * settings.recoveryMaxBalancePercent / 100) / settings.stopLossDollars));
+    level = Math.min(level, maxByRisk);
+  }
+  level = Math.min(level, settings.recoveryMaxPositions, settings.maxOpenTrades);
+  return { level: Math.max(1, level), capped: level < fullRecoveryLevel, fullRecoveryLevel };
+}
+
+// Shared by every close path (paper TP/SL, manual close, profit-lock
+// lock-in, real-mode estimated close, grid batch win/loss) — only actually
+// adjusts the pool while settings.recoveryEnabled is on, so turning the
+// feature off stops it tracking new losses without silently resetting
+// whatever's already in the pool.
+function applyRecoveryPnl(pnl){
+  if(!settings.recoveryEnabled || pnl == null) return;
+  if(pnl < 0){
+    state.recoveryLossPool += Math.abs(pnl);
+  } else if(pnl > 0 && state.recoveryLossPool > 0){
+    const before = state.recoveryLossPool;
+    state.recoveryLossPool = Math.max(0, state.recoveryLossPool - pnl);
+    if(state.recoveryLossPool === 0){
+      log('✅ Recovery pool cleared — this win covered the remaining $' + before.toFixed(2) + ' and this account is net ahead of where the losing streak started.');
+    }
+  }
+}
+
 function computeLots(){
   // No lot size typed in: fall back to the broker's own minimum rather than
   // a pip-based guess — dollar-based SL/TP below no longer depends on lots
@@ -2125,6 +2534,7 @@ function checkPaperPositions(){
     const priceDiff = pos.side==='buy' ? (exit-pos.entry) : (pos.entry-exit);
     const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
     state.paperBalance += pnl;
+    applyRecoveryPnl(pnl);
     const reason = hitTp ? 'TP' : 'SL';
     log(reason+' hit on '+pos.side+' '+state.symbol+' — paper P&L '+(pnl>=0?'+':'')+pnl.toFixed(2));
     addExitMarker(reason+' '+(pnl>=0?'+':'')+pnl.toFixed(2), hitTp?'#16a34a':'#dc2626');
@@ -2175,6 +2585,7 @@ function closePaperPosition(id){
   const priceDiff = pos.side==='buy' ? (price-pos.entry) : (pos.entry-price);
   const pnl = priceDiff * dollarPerUnitFor(pos.lots * state.symbolLotUnits);
   state.paperBalance += pnl;
+  applyRecoveryPnl(pnl);
   state.paperPositions.splice(idx,1);
   log('Manually closed ' + pos.side + ' ' + state.symbol + ' — paper P&L ' + (pnl>=0?'+':'') + pnl.toFixed(2));
   addExitMarker('Closed '+(pnl>=0?'+':'')+pnl.toFixed(2), pnl>=0?'#16a34a':'#dc2626');
@@ -2345,6 +2756,11 @@ function updateDashboard(){
     sessionEl.style.color = sessionPnl >= 0 ? 'var(--ok)' : 'var(--danger)';
   }
   $('metTrades').textContent = settings.paperMode ? state.paperPositions.length : state.positions.length;
+  const poolEl = $('metRecoveryPool');
+  if(poolEl){
+    poolEl.textContent = '$' + state.recoveryLossPool.toFixed(2) + (settings.recoveryEnabled ? '' : ' (off)');
+    poolEl.style.color = state.recoveryLossPool > 0 ? 'var(--danger)' : 'var(--ok)';
+  }
   $('stopIcon').textContent = state.running ? '⏸' : '▶';
   $('stopLabel').textContent = state.running ? 'Stop' : 'Start';
   $('engineStatus').innerHTML = 'Signal engine: ' +
