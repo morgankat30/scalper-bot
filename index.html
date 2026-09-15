@@ -475,6 +475,12 @@ const state = {
   // gridPositionIds tracks which real positionIds belong to it (paper legs
   // are tagged directly with isGrid:true instead, right on the position object).
   gridBatchOpen:false, gridBatchConfirmed:false, gridBatchLevel:1, gridPositionIds:[],
+  // New — pending reversal queue: when a real-mode reversal closes the
+  // current batch and wants to immediately fire the opposite direction,
+  // this holds that reversal until the close is actually confirmed gone
+  // from state.positions (see fireReversal()/checkPendingReversal() below),
+  // instead of firing the moment the close request is merely SENT.
+  pendingReversal:null, pendingReversalWaitIds:[],
   // New — recovery mode + same-candle fast continuation.
   // gridBatchSide: which direction the currently-open (or just-closed)
   // batch is trading.
@@ -1538,6 +1544,7 @@ function onSpot(p){
   updateDashboard();
   syncPriceLines(); // per-position price lines on the chart itself — see its own comment
 
+  checkPendingReversal(); // must run before the gridEnabled branch/return below — see its own comment
   checkProfitLock(); // every tick, both grid and non-grid, paper and real — see its own comment above
 
   // Grid/Ladder mode is price-distance driven, not pattern driven like the
@@ -1665,6 +1672,43 @@ function gridFloatingPnl(){
   }
   return floating;
 }
+// New — fires a reversal (opposite direction) only once the close it
+// depends on is actually confirmed gone, not the instant the close request
+// is sent. In paper mode closes are synchronous already, so this just opens
+// immediately there. See checkPendingReversal() for the real-mode wait.
+function fireReversal(kind, side, level, label, waitIds){
+  if(settings.paperMode || !waitIds || !waitIds.length){
+    if(kind === 'grid') openGridBatch(side, level, label);
+    else for(let i=0;i<level;i++) placeOrder(side);
+    return;
+  }
+  state.pendingReversal = { kind, side, level, label };
+  state.pendingReversalWaitIds = waitIds.slice();
+  log('Waiting for the close to confirm before firing ' + (side==='sell'?'SHORT':'LONG') + ' x' + level + '...');
+}
+
+// FIX ("it has to close and fires immediately after the closing of the
+// trades" — the opposite-direction-while-still-open problem): every
+// reversal used to call openGridBatch()/placeOrder() the same instant the
+// close request was SENT, not once it was actually confirmed by the
+// broker — on a slow tick, the new opposite-direction order could land
+// before the old one had really closed, meaning both directions were
+// briefly open at once. Now a reversal is queued via fireReversal() above
+// and only actually fires here, once every positionId it was waiting on
+// has genuinely vanished from state.positions. Runs every tick, before
+// anything else, so it can never be starved by the gridEnabled branch/
+// return below it.
+function checkPendingReversal(){
+  if(!state.pendingReversal) return;
+  const stillOpen = state.pendingReversalWaitIds.some(id => state.positions.some(p => p.positionId === id));
+  if(stillOpen) return;
+  const r = state.pendingReversal;
+  state.pendingReversal = null;
+  state.pendingReversalWaitIds = [];
+  if(r.kind === 'grid') openGridBatch(r.side, r.level, r.label);
+  else for(let i=0;i<r.level;i++) placeOrder(r.side);
+}
+
 // Shared by every path that opens a grid batch — the normal confirmed
 // entry, the same-candle fast continuation, and the recovery flip — so
 // all three place orders identically instead of duplicating this logic.
@@ -1758,6 +1802,7 @@ function checkGridBatchExit(){
     const wonSide = state.gridBatchSide;
     const wasRecovery = state.gridIsRecovery;
     const alreadyContinued = state.gridSameCandleContinued;
+    const closingIds = state.gridPositionIds.slice(); // captured before closeGridBatch() clears it — see fireReversal()
     closeGridBatch();
     const nextLevel = state.gridBatchLevel >= settings.gridMaxLevels ? 1 : state.gridBatchLevel + 1;
 
@@ -1802,7 +1847,7 @@ function checkGridBatchExit(){
       }
     } else if(stillSameCandle && nextLevel > 1){
       const oppositeSide = wonSide === 'buy' ? 'sell' : 'buy';
-      openGridBatch(oppositeSide, nextLevel, 'candle still open — pullback round, opposite direction (' + (oppositeSide==='sell'?'SHORT':'LONG') + ')');
+      fireReversal('grid', oppositeSide, nextLevel, 'candle still open — pullback round, opposite direction (' + (oppositeSide==='sell'?'SHORT':'LONG') + ')', closingIds);
       state.gridConfirmedDirection = oppositeSide;
       state.gridSameCandleContinued = true; // this candle's one extra round is used — no further same-candle rounds after this
     } else {
@@ -1813,8 +1858,9 @@ function checkGridBatchExit(){
     }
   } else if(settings.gridMaxDrawdown > 0 && floating <= -settings.gridMaxDrawdown){
     log('Grid max drawdown hit (' + floating.toFixed(2) + ') — force-closing the batch.');
+    const closingIds = state.gridPositionIds.slice(); // captured before closeGridBatch() clears it — see fireReversal()
     closeGridBatch();
-    handleGridLoss(floating);
+    handleGridLoss(floating, closingIds);
   }
 }
 
@@ -1833,7 +1879,7 @@ function checkGridBatchExit(){
 //     checkGridBatchExit() above; if that clears the pool to 0, recovery
 //     mode itself turns off below. If the pool is still > 0 (win too small
 //     or another loss), the next round fires again, freshly sized.
-function handleGridLoss(lossAmount){
+function handleGridLoss(lossAmount, waitIds){
   const lostSide = state.gridBatchSide;
   const wasRecovery = state.gridIsRecovery;
   state.gridConfirmedDirection = null;
@@ -1855,9 +1901,9 @@ function handleGridLoss(lossAmount){
       return;
     }
     const recoverySide = lostSide === 'buy' ? 'sell' : 'buy';
-    log('Grid recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + state.gridBatchLevel + ' immediately, no confirmation wait, to recover the loss.');
+    log('Grid recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + state.gridBatchLevel + (waitIds && waitIds.length ? ', as soon as the close confirms' : ' immediately') + ', to recover the loss.');
     state.gridIsRecovery = true;
-    openGridBatch(recoverySide, state.gridBatchLevel, 'recovery — immediate flip after a loss, no confirmation wait');
+    fireReversal('grid', recoverySide, state.gridBatchLevel, 'recovery — flip after a loss', waitIds);
     return;
   }
 
@@ -1872,13 +1918,13 @@ function handleGridLoss(lossAmount){
   const recoverySide = lostSide === 'buy' ? 'sell' : 'buy';
   const recovery = computeRecoveryLevel();
   if(recovery.capped){
-    log('⚠️ Recovery capped at ' + recovery.level + ' position(s) by your balance/risk settings (full recovery of the $' + state.recoveryLossPool.toFixed(2) + ' pool would need ' + recovery.fullRecoveryLevel + ') — firing what the caps allow; this round will NOT fully clear the pool even on a win.');
+    log('⚠️ Recovery capped at ' + recovery.level + ' position(s) by your balance/risk settings (full recovery of the $' + state.recoveryLossPool.toFixed(2) + ' pool would need ' + recovery.fullRecoveryLevel + ') — firing what the caps allow' + (waitIds && waitIds.length ? ' as soon as the close confirms' : '') + '; this round will NOT fully clear the pool even on a win.');
   } else {
-    log('Recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + recovery.level + ' immediately, no confirmation wait, sized to clear the $' + state.recoveryLossPool.toFixed(2) + ' pool plus $' + settings.recoveryTargetProfit.toFixed(2) + ' if it wins.');
+    log('Recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + recovery.level + (waitIds && waitIds.length ? ', as soon as the close confirms' : ' immediately') + ', sized to clear the $' + state.recoveryLossPool.toFixed(2) + ' pool plus $' + settings.recoveryTargetProfit.toFixed(2) + ' if it wins.');
   }
   state.gridIsRecovery = true;
   state.gridBatchLevel = recovery.level;
-  openGridBatch(recoverySide, recovery.level, 'recovery — sized to the outstanding loss pool');
+  fireReversal('grid', recoverySide, recovery.level, 'recovery — sized to the outstanding loss pool', waitIds);
 }
 
 // Only acts on a CLOSED candle (barClosed) — a candlestick pattern is
@@ -2160,13 +2206,16 @@ function checkProfitLock(){
   const side = currentOpenSide();
   if(!side) return;
   const floating = settings.gridEnabled ? gridFloatingPnl() : computeFloatingPnl();
-  // Arm/giveback scale with how many positions are actually open — a
-  // recovery round holding N positions moves N times as fast per tick of
-  // price, so a flat $0.38/$0.08 would arm and give back almost instantly
-  // on a big round. Scaling by openCount keeps the same "per position"
-  // behavior regardless of round size.
-  const armLevel = settings.profitLockArm * openCount;
-  const givebackLevel = settings.profitLockGiveback * openCount;
+  // FIX ("it doesn't matter on how many open positions the bot has
+  // opened, as long as it gets to the protection amount set it should
+  // always come"): this used to multiply the arm/giveback settings by
+  // openCount, so a recovery round with more positions needed proportionally
+  // more floating profit before protection even turned on. Now both are
+  // exactly the dollar amounts typed into settings, regardless of how many
+  // positions are open — a $0.38 arm means $0.38 of real floating profit,
+  // whether that's from 1 position or 8.
+  const armLevel = settings.profitLockArm;
+  const givebackLevel = settings.profitLockGiveback;
 
   if(!state.profitLockArmed){
     if(floating >= armLevel){
@@ -2202,19 +2251,17 @@ function lockInAndReverse(flipSide, realizedPnl){
     log('⚠️ Recovery capped at ' + nextLevel + ' position(s) after this profit-lock close — $' + state.recoveryLossPool.toFixed(2) + ' of the pool is still outstanding.');
   }
   if(settings.gridEnabled){
+    const closingIds = state.gridPositionIds.slice(); // captured before closeGridBatch() clears it — see fireReversal()
     closeGridBatch();
     state.gridBatchLevel = nextLevel;
-    // Fire the reversal immediately rather than waiting for the close
-    // above to be confirmed — paper mode's close is synchronous anyway,
-    // and real mode's close is just a request already in flight, same as
-    // every other same-tick reversal already in this file (see Flip on TP).
-    openGridBatch(flipSide, nextLevel, 'profit-lock reversal');
+    fireReversal('grid', flipSide, nextLevel, 'profit-lock reversal', closingIds);
   } else if(settings.paperMode){
     [...state.paperPositions].forEach(p => closePaperPosition(p.id));
     for(let i=0;i<nextLevel;i++) openPaperTrade(flipSide);
   } else {
+    const closingIds = state.positions.map(p => p.positionId);
     state.positions.forEach(p => closeRealPosition(p.positionId, p.tradeData ? p.tradeData.volume : 0));
-    for(let i=0;i<nextLevel;i++) placeOrder(flipSide);
+    fireReversal('plain', flipSide, nextLevel, 'profit-lock reversal', closingIds);
   }
 }
 
@@ -2338,7 +2385,20 @@ function computeRecoveryLevel(){
     const maxByRisk = Math.max(1, Math.floor((bal * settings.recoveryMaxBalancePercent / 100) / settings.stopLossDollars));
     level = Math.min(level, maxByRisk);
   }
-  level = Math.min(level, settings.recoveryMaxPositions, settings.maxOpenTrades);
+  // FIX ("let it calculate the recovery according to the account balance
+  // so that it makes a good recovery without leaving money in the market"):
+  // this used to also cap level by settings.maxOpenTrades — a setting for
+  // pacing NORMAL trading (defaults to 3), nothing to do with balance or
+  // recovery at all. That meant recovery could never open more than 3
+  // positions no matter how big your balance was or what
+  // recoveryMaxBalancePercent would otherwise allow, so any loss needing
+  // more than 3 x $0.50 to clear was guaranteed to get capped and leave
+  // money behind — every time, regardless of account size. Recovery's
+  // sizing is now governed only by the two caps actually meant for it:
+  // recoveryMaxBalancePercent (scales with balance) and
+  // recoveryMaxPositions (a dedicated recovery ceiling, separately
+  // tunable in settings).
+  level = Math.min(level, settings.recoveryMaxPositions);
   return { level: Math.max(1, level), capped: level < fullRecoveryLevel, fullRecoveryLevel };
 }
 
