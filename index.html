@@ -491,6 +491,7 @@ const state = {
   // toward the 2-candle confirmation — only fresh candles formed after
   // pressing Start do.
   gridBarsAtStart:0,
+  gridBarsClosedCount:0,
   // New — profit-lock trail tracking: highest floating P&L this batch has
   // reached so far (reset to 0 every time a fresh batch opens). Compared
   // against the live floating value each tick to detect a giveback.
@@ -1450,6 +1451,15 @@ function onSpot(p){
   const mid = ((state.bid || 0) + (state.ask || 0)) / 2 || state.bid || state.ask;
 
   const barClosed = pushToBars(mid);
+  // FIX (real bug in my last change — "bot doesn't fire trades, stuck
+  // warming up forever"): state.bars is capped at 200 entries and gets
+  // preloaded to exactly 200 on startup, so comparing state.bars.length
+  // before/after Start could never detect "2 new candles" — the array was
+  // already at its cap and just shifts in place forever. This counter
+  // increments every real candle close and is never capped, so it's a
+  // correct way to count "candles closed since Start" regardless of how
+  // full state.bars already is.
+  if(barClosed) state.gridBarsClosedCount = (state.gridBarsClosedCount || 0) + 1;
   updateChartLiveTick(mid);
   checkPaperPositions(); // TP/SL still watched every tick — only ENTRIES wait for a close
 
@@ -1840,8 +1850,8 @@ function checkGridBatchEntry(barClosed){
   }
   if(!settings.paperMode && !state.symbolFullLoaded) return;
   if(isForexWeekendClosure() && !isLikelyCrypto(state.symbol)) return;
-  if(state.bars.length < state.gridBarsAtStart + 2){
-    log('[Grid] Warming up — waiting for ' + (state.gridBarsAtStart + 2 - state.bars.length) + ' more fresh candle(s) since Start before the first confirmation can count.');
+  if(state.gridBarsClosedCount < state.gridBarsAtStart + 2){
+    log('[Grid] Warming up — waiting for ' + (state.gridBarsAtStart + 2 - state.gridBarsClosedCount) + ' more fresh candle(s) since Start before the first confirmation can count.');
     return;
   }
 
@@ -2573,7 +2583,7 @@ $('stopBtn').addEventListener('click', () => {
     // happened. Now Start remembers how many bars existed at this exact
     // moment; entry stays blocked until at least 2 MORE have closed since,
     // guaranteeing both confirmation candles are brand new.
-    state.gridBarsAtStart = state.bars.length;
+    state.gridBarsAtStart = state.gridBarsClosedCount || 0;
     state.gridConfirmedDirection = null;
     state.gridSameCandleContinued = false;
   }
