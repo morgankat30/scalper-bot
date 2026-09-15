@@ -1765,7 +1765,16 @@ function checkGridBatchExit(){
       state.gridSameCandleContinued = false;
       log('Grid: back to normal — watching for a fresh confirmed signal to see if it continues ' + (wonSide==='sell'?'bearish':'bullish') + ' or reverses, before firing again.');
     }
-  } else if(settings.gridTrailArmed && state.gridFloatingPeak > 0 && (state.gridFloatingPeak - floating) >= settings.gridTrailGiveback){
+  } else if(settings.gridTrailArmed && floating > 0 && state.gridFloatingPeak >= settings.gridTrailGiveback && (state.gridFloatingPeak - floating) >= settings.gridTrailGiveback){
+    // FIX ("supposed to close with profits... not losses"): this only ever
+    // compared the DROP from peak, never whether the batch was still
+    // actually positive at the moment it decided to close — so a trivial
+    // $0.03 peak plus a $0.15 giveback let floating swing all the way past
+    // zero into a real loss (-$0.34 in your log) before it fired. Now it
+    // requires (1) floating is still > 0 right now — it can never close
+    // this for a loss — and (2) the peak itself was at least as big as the
+    // giveback amount, so a peak of $0.03 noise can no longer arm this at
+    // all; only a real float worth protecting can.
     // New — profit-lock trail ("grab those small profits that float...
     // before the market pulls back to negative again"): the batch was
     // floating positive at some point but pulled back from its own peak
