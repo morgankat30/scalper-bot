@@ -514,7 +514,7 @@ const state = {
   // closes some other way (real TP/SL, manual close) — either of which
   // clears it below. profitLockSide remembers which direction was open at
   // arm time, purely so the reversal knows which way to flip.
-  profitLockArmed:false, profitLockSide:null,
+  profitLockArmed:false, profitLockSide:null, profitLockPeak:0,
   // New feature — Loss recovery sizing. recoveryLossPool is the running
   // total (dollars) of net losses not yet recovered — only accumulated
   // while settings.recoveryEnabled is on (see computeRecoveryLevel() and
@@ -1672,41 +1672,38 @@ function gridFloatingPnl(){
   }
   return floating;
 }
-// New — fires a reversal (opposite direction) only once the close it
-// depends on is actually confirmed gone, not the instant the close request
-// is sent. In paper mode closes are synchronous already, so this just opens
-// immediately there. See checkPendingReversal() for the real-mode wait.
+// FIX ("the bot is over losing trades... give it a 2 candle confirmation
+// and the entry tracker so that the bot knows which correct direction to
+// enter"): every reversal (profit-lock AND recovery) used to fire the
+// opposite direction the instant the close confirmed, with no check at
+// all on whether that direction actually had anything behind it — pure
+// reflex. That's what turned into the whipsaw loop in your log: 8
+// positions closed, 8 reopened the other way, armed and reversed again
+// four seconds later, over and over, the $22 pool never actually
+// shrinking — each flip just paying spread both ways for nothing. Now a
+// reversal no longer forces a direction at all: once the close confirms,
+// it goes back to watching for a genuine, fresh 2-candle confirmation —
+// the exact same check a normal entry uses — and opens in WHATEVER
+// direction that confirms, even if that's the same side it just closed.
+// The recovery sizing (state.gridBatchLevel/gridIsRecovery) is already
+// set by the caller before this runs, so whichever direction the next
+// real signal confirms still opens at the correct recovery size.
 function fireReversal(kind, side, level, label, waitIds){
   if(settings.paperMode || !waitIds || !waitIds.length){
-    if(kind === 'grid') openGridBatch(side, level, label);
-    else for(let i=0;i<level;i++) placeOrder(side);
+    log('Closed — waiting for a fresh 2-candle confirmation before re-entering (no more blind reversals).');
     return;
   }
   state.pendingReversal = { kind, side, level, label };
   state.pendingReversalWaitIds = waitIds.slice();
-  log('Waiting for the close to confirm before firing ' + (side==='sell'?'SHORT':'LONG') + ' x' + level + '...');
 }
 
-// FIX ("it has to close and fires immediately after the closing of the
-// trades" — the opposite-direction-while-still-open problem): every
-// reversal used to call openGridBatch()/placeOrder() the same instant the
-// close request was SENT, not once it was actually confirmed by the
-// broker — on a slow tick, the new opposite-direction order could land
-// before the old one had really closed, meaning both directions were
-// briefly open at once. Now a reversal is queued via fireReversal() above
-// and only actually fires here, once every positionId it was waiting on
-// has genuinely vanished from state.positions. Runs every tick, before
-// anything else, so it can never be starved by the gridEnabled branch/
-// return below it.
 function checkPendingReversal(){
   if(!state.pendingReversal) return;
   const stillOpen = state.pendingReversalWaitIds.some(id => state.positions.some(p => p.positionId === id));
   if(stillOpen) return;
-  const r = state.pendingReversal;
   state.pendingReversal = null;
   state.pendingReversalWaitIds = [];
-  if(r.kind === 'grid') openGridBatch(r.side, r.level, r.label);
-  else for(let i=0;i<r.level;i++) placeOrder(r.side);
+  log('Closed — waiting for a fresh 2-candle confirmation before re-entering (no more blind reversals).');
 }
 
 // Shared by every path that opens a grid batch — the normal confirmed
@@ -1848,7 +1845,8 @@ function checkGridBatchExit(){
     } else if(stillSameCandle && nextLevel > 1){
       const oppositeSide = wonSide === 'buy' ? 'sell' : 'buy';
       fireReversal('grid', oppositeSide, nextLevel, 'candle still open — pullback round, opposite direction (' + (oppositeSide==='sell'?'SHORT':'LONG') + ')', closingIds);
-      state.gridConfirmedDirection = oppositeSide;
+      state.gridBatchLevel = nextLevel; // next real confirmation opens at this bigger size, whichever direction it confirms
+      state.gridConfirmedDirection = null; // no more forced direction — see fireReversal()'s fix note
       state.gridSameCandleContinued = true; // this candle's one extra round is used — no further same-candle rounds after this
     } else {
       state.gridBatchLevel = nextLevel;
@@ -2221,18 +2219,31 @@ function checkProfitLock(){
     if(floating >= armLevel){
       state.profitLockArmed = true;
       state.profitLockSide = side;
-      log('🔒 Profit protection armed at +$' + floating.toFixed(2) + ' (' + openCount + ' pos) — will lock in and reverse if it gives back down to +$' + (armLevel - givebackLevel).toFixed(2) + '.');
+      state.profitLockPeak = floating; // FIX below — this now tracks the real high, not a fixed lock line
+      log('🔒 Profit protection armed at +$' + floating.toFixed(2) + ' (' + openCount + ' pos) — will lock in and reverse if it gives back $' + givebackLevel.toFixed(2) + ' from whatever high it reaches.');
     }
     return;
   }
 
   state.profitLockSide = side; // stay in sync in case it changed (direction-lock normally prevents this)
-  const lockLevel = armLevel - givebackLevel;
+  // FIX ("profits goes to $1.40 and it starts going down, the protection
+  // should always close faster... not waiting for it to reach $0.38...
+  // should always close once the market takes back $0.08 on the HIGH
+  // amount"): the lock level used to be fixed at armLevel-givebackLevel
+  // the moment it armed (e.g. $0.30) and never moved — so if floating kept
+  // climbing to $1.40, none of that was protected; it would only fire once
+  // price crashed all the way back down to $0.30, giving back over a
+  // dollar of real profit first. Now it tracks the actual peak reached
+  // since arming and gives back only from THAT high, so a $1.40 peak locks
+  // in around $1.32, not $0.30.
+  if(floating > state.profitLockPeak) state.profitLockPeak = floating;
+  const lockLevel = state.profitLockPeak - givebackLevel;
   if(floating <= lockLevel){
     const flipSide = state.profitLockSide === 'buy' ? 'sell' : 'buy';
-    log('🔒 Profit protection triggered — pulled back to +$' + floating.toFixed(2) + ' from the +$' + armLevel.toFixed(2) + ' arm level. Locking it in now and firing ' + (flipSide==='buy'?'LONG':'SHORT') + ' the other way, same tick.');
+    log('🔒 Profit protection triggered — gave back $' + (state.profitLockPeak - floating).toFixed(2) + ' from its peak of +$' + state.profitLockPeak.toFixed(2) + ', now at +$' + floating.toFixed(2) + '. Locking it in now and firing ' + (flipSide==='buy'?'LONG':'SHORT') + ' the other way, same tick.');
     state.profitLockArmed = false;
     state.profitLockSide = null;
+    state.profitLockPeak = 0;
     lockInAndReverse(flipSide, floating);
   }
 }
