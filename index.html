@@ -1954,6 +1954,25 @@ function handleGridLoss(lossAmount, waitIds){
   const recoverySide = lostSide === 'buy' ? 'sell' : 'buy';
   const recovery = computeRecoveryLevel();
   if(recovery.capped){
+    // FIX ("This is worse" — the pool grew $4.51 -> $12.70 -> $19.77 ->
+    // $29.75 -> $40.94, every round): once the cap forces a round that
+    // can't fully cover the pool, that round mathematically cannot shrink
+    // the pool back to zero even on a win, and a loss adds straight on
+    // top — the pool can only grow from there. Nothing used to stop this;
+    // it would keep firing capped round after capped round forever. Now,
+    // once a round would need more than 3x the capped size just to break
+    // even, that's treated as structurally unrecoverable under the
+    // current caps — the bot stops itself instead of digging further.
+    // Raise recoveryMaxPositions/recoveryMaxBalancePercent and restart
+    // deliberately if you want to keep trying to recover this pool.
+    const roundsNeeded = recovery.fullRecoveryLevel / recovery.level;
+    if(roundsNeeded > 3){
+      log('🛑 Recovery pool ($' + state.recoveryLossPool.toFixed(2) + ') would need ' + recovery.fullRecoveryLevel + ' positions to clear, but the cap only allows ' + recovery.level + ' — that\'s ' + roundsNeeded.toFixed(1) + 'x over, structurally unrecoverable at this cap. Stopping the bot instead of firing another round that can only make the pool bigger.');
+      state.running = false;
+      state.gridIsRecovery = false;
+      updateDashboard();
+      return;
+    }
     log('⚠️ Recovery capped at ' + recovery.level + ' position(s) by your balance/risk settings (full recovery of the $' + state.recoveryLossPool.toFixed(2) + ' pool would need ' + recovery.fullRecoveryLevel + ') — firing what the caps allow' + (waitIds && waitIds.length ? ' as soon as the close confirms' : '') + '; this round will NOT fully clear the pool even on a win.');
   } else {
     log('Recovery: firing ' + (recoverySide==='sell'?'SHORT':'LONG') + ' x' + recovery.level + (waitIds && waitIds.length ? ', as soon as the close confirms' : ' immediately') + ', sized to clear the $' + state.recoveryLossPool.toFixed(2) + ' pool plus $' + settings.recoveryTargetProfit.toFixed(2) + ' if it wins.');
