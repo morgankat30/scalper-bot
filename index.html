@@ -1988,6 +1988,15 @@ function handleGridLoss(lossAmount, waitIds){
 // "entering before the reversal is confirmed" problem from before.
 function checkGridBatchEntry(barClosed){
   if(!settings.gridEnabled || !state.running || state.gridBatchOpen || !barClosed) return;
+  // FIX ("opening both directions at once"): gridBatchOpen goes false the
+  // instant a batch closes, which is also exactly when a queued reversal
+  // (profit-lock or recovery) may still be waiting for that same close to
+  // confirm before it fires. In that window, this function used to see
+  // "no batch open" and happily fire an entirely unrelated fresh signal —
+  // landing at the same time as the reversal it had nothing to do with,
+  // in the opposite direction. Block fresh entries until any queued
+  // reversal has actually fired.
+  if(state.pendingReversal) return;
   const bal = settings.paperMode ? state.paperBalance : state.balance;
   if(bal == null) return;
   if(dailyLossHalted(bal)){
