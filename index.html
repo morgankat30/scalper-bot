@@ -138,9 +138,6 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
 .badge.live{color:var(--red); border-color:var(--red); background:rgba(255,0,51,.08);}
 .badge.demo{color:var(--gold); border-color:var(--gold); background:rgba(255,215,0,.08);}
 .badge.off{color:var(--dim); border-color:var(--line);}
-.env-btn{cursor:pointer; opacity:.4;}
-.env-btn.active{opacity:1;}
-.env-row{display:flex; justify-content:center; gap:8px; margin:6px 0 2px;}
 
 /* Conn status */
 .conn-status{position:absolute; top:12px; right:16px; z-index:10;}
@@ -276,8 +273,8 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
     <label>Client Secret</label><input id="ctSec" type="password" placeholder="Client Secret">
     <label>Access Token</label><input id="ctTok" type="password" placeholder="Access Token">
     <label>Refresh Token (optional)</label><input id="ctRef" type="password" placeholder="Refresh Token">
-    <input id="ctEnv" type="hidden" value="demo">
-    <p style="color:var(--dim); font-size:11px; margin-top:2px;">Demo/Live is switched from inside the bot, not here — connect once and flip it on the dashboard any time.</p>
+    <label>Environment</label>
+    <select id="ctEnv"><option value="demo">Demo account (paper money — start here)</option><option value="live">Live account (real money)</option></select>
     <div class="tog" style="margin-top:10px;">
       <div><b>Remember login</b><small>Saves these fields in this browser so you don't retype them. Anyone with access to this phone/browser could see them.</small></div>
       <div class="switch" id="swRemCT" onclick="this.classList.toggle('on')"></div>
@@ -316,27 +313,14 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
 
 <!-- MAIN DASHBOARD -->
 <div id="scrDash" class="screen">
-  <div class="conn-status">
-    <span id="connBadge" class="badge off">OFFLINE</span>
-  </div>
+  <div class="conn-status"><span id="connBadge" class="badge off">OFFLINE</span></div>
   <div class="dash-scroll" id="dashScroll">
     <!-- FIX (live 3D Megan replaces the old static header robot): removed
          the SVG icon here too — kept the title text, since that's the
          product name, not part of the old robot graphic. -->
     <div class="robot-hero">
       <div class="robot-title">SERIES X ULTRA AI</div>
-      <div class="robot-sub">HUNDIO</div>
-    </div>
-
-    <!-- FIX ("two demo option which are not even working... look stupid"):
-         these used to live inside .conn-status, which is position:absolute
-         top-right — a tiny corner box never sized for two extra badges, so
-         they visually crushed into and overlapped the robot-title text
-         instead of sitting in their own row. Moved into the normal in-flow
-         layout, its own centered row, so nothing overlaps. -->
-    <div class="env-row">
-      <span id="envDemoBtn" class="badge demo env-btn" onclick="switchEnv('demo')">DEMO</span>
-      <span id="envLiveBtn" class="badge live env-btn" onclick="switchEnv('live')">LIVE</span>
+      <div class="robot-sub" id="curSymbolMeta">HUNDIO</div>
     </div>
 
     <div class="ctrl-bar">
@@ -347,6 +331,22 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
     </div>
 
     <div class="tradeport-label">Tradeport EA</div>
+
+    <!-- SINGLE-PAGE PAIR PICKER — tap this header to open the inline
+         search panel right here, no separate screen. Replaces the old
+         "Robot List" card that just navigated to a full Trading Pairs
+         page. -->
+    <div style="margin:0 16px 8px; padding:10px 12px; background:var(--panel); border:1px solid var(--line); border-radius:10px; cursor:pointer;" onclick="toggleSymbolPicker()">
+      <div style="font-size:11px; color:var(--dim);">Trading pair — tap to search all available symbols</div>
+      <div style="font-family:'Orbitron'; font-size:14px; font-weight:700; color:#fff;">Currently: <span id="curSymbolName">XAUUSD</span> — tap to search/change</div>
+    </div>
+    <div id="symbolPickerPanel" style="display:none; margin:0 16px 10px; padding:12px; background:var(--panel2); border:1px solid var(--line); border-radius:10px;">
+      <input id="symSearch" placeholder="Tap to search/add a symbol..." autocomplete="off" onkeydown="if(event.key==='Enter')pickFirstSearchMatch();" style="width:100%; margin-bottom:0;">
+      <div id="symSearchResults" style="max-height:240px; overflow-y:auto; display:none; background:#1a1a25; border:1px solid #2a2a3a; border-radius:10px; margin-top:6px; margin-bottom:10px;"></div>
+      <p id="symSearchStatus" style="font-size:11px; color:var(--dim); margin:-4px 0 12px;"></p>
+      <div class="section-title" style="margin-top:0;">Your Symbols</div>
+      <div id="symbolList"></div>
+    </div>
 
     <!-- CHART -->
     <div style="display:flex; gap:6px; justify-content:center; margin:0 16px 8px;" id="chartTfRow"></div>
@@ -378,23 +378,13 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
         <div><label>Positions Per Entry</label><input id="cfgPosCount" type="number" min="1" max="10" value="3"></div>
         <div><label>Max Positions</label><input id="cfgMaxPos" type="number" min="0" max="20" value="0"></div>
       </div>
-      <label>Timeframe</label>
-      <select id="cfgTF"><option value="1">M1</option><option value="5">M5</option><option value="15" selected>M15</option><option value="30">M30</option><option value="60">H1</option></select>
       <div class="row2">
-        <div><label>Basket Profit ($)</label><input id="cfgBasket" type="number" step="0.5" min="1" value="5"></div>
         <div><label>Cooldown (sec)</label><input id="cfgCool" type="number" min="5" value="60"></div>
+        <div><label>Max Spread %</label><input id="cfgSpread" type="number" step="0.01" min="0.01" value="0.5"></div>
       </div>
       <div class="row2">
         <div><label>SL Distance ($)</label><input id="cfgSL" type="number" step="0.5" min="1" value="15"></div>
-        <div><label>Profit Arm ($)</label><input id="cfgProfitArm" type="number" step="0.01" min="0.01" value="0.38"></div>
-      </div>
-      <div class="row2">
-        <div><label>Profit Giveback ($)</label><input id="cfgProfitGiveback" type="number" step="0.01" min="0" value="0.08"></div>
-        <div><label>Max Hold (min)</label><input id="cfgHold" type="number" min="1" max="60" value="5"></div>
-      </div>
-      <div class="row2">
-        <div><label>Max Spread %</label><input id="cfgSpread" type="number" step="0.01" min="0.01" value="0.5"></div>
-        <div></div>
+        <div><label>Trail Buffer ($)</label><input id="cfgTrail" type="number" step="0.1" min="0.5" value="2"></div>
       </div>
       <div class="row2">
         <div><label>Stop at profit ($, 0=off)</label><input id="cfgProfitStop" type="number" step="1" min="0" value="0"></div>
@@ -445,12 +435,16 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
         <div><label>Grid RSI Oversold</label><input id="cfgGridRsiOS" type="number" min="1" max="49" value="30"></div>
         <div><label>Grid RSI Overbought</label><input id="cfgGridRsiOB" type="number" min="51" max="99" value="70"></div>
       </div>
+      <label>Starting TP per position ($)</label>
+      <input id="cfgGridTP" type="number" step="0.01" min="0.01" value="0.5">
       <div class="tog">
-        <div><b>Grid Profit-Lock</b><small>Bank a pulled-back peak instead of risking it slip further, then flip</small></div>
+        <div><b>Grid Profit-Lock</b><small>Once armed, bank a pulled-back peak instead of risking it slip further, then flip</small></div>
         <div class="switch on" id="swGridProfitLock" onclick="this.classList.toggle('on')"></div>
       </div>
-      <label>Grid Profit-Lock Giveback ($)</label>
-      <input id="cfgGridProfitLockGiveback" type="number" step="0.01" min="0.01" value="0.15">
+      <div class="row2">
+        <div><label>Arm at ($)</label><input id="cfgGridProfitLockArm" type="number" step="0.01" min="0.01" value="0.38"></div>
+        <div><label>Giveback from peak ($)</label><input id="cfgGridProfitLockGiveback" type="number" step="0.01" min="0.01" value="0.08"></div>
+      </div>
 
       <div class="tog" style="margin-top:10px;">
         <div><b>Auto-Reverse</b><small>Flip direction on close</small></div>
@@ -461,12 +455,12 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
         <div class="switch on" id="swProtect" onclick="this.classList.toggle('on')"></div>
       </div>
       <div class="tog">
-        <div><b>Zone Overlay</b><small>Draw the recent support/resistance range on the chart</small></div>
-        <div class="switch on" id="swZones" onclick="this.classList.toggle('on');if(candleSeries)redrawChart();"></div>
-      </div>
-      <div class="tog">
         <div><b>News Trading</b><small>Trade news breakouts</small></div>
         <div class="switch" id="swNewsTrade" onclick="this.classList.toggle('on')"></div>
+      </div>
+      <div class="tog">
+        <div><b>Paper Mode</b><small>Simulate trades</small></div>
+        <div class="switch on" id="swPaper" onclick="this.classList.toggle('on');updatePaper()"></div>
       </div>
       <div class="tog">
         <div><b>Arm Live</b><small>Allow real orders</small></div>
@@ -516,35 +510,12 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
       <button class="btn-close" onclick="closeAll()">CLOSE ALL</button>
     </div>
 
-    <!-- ROBOT LIST -->
-    <div class="section-title">Robot List</div>
-    <div class="robot-list-card active" onclick="showScreen('symbols')">
-      <div class="icon">
-        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><ellipse cx="50" cy="45" rx="28" ry="32" fill="#1a1a25" stroke="#ff0033" stroke-width="1.5"/><ellipse cx="38" cy="42" rx="7" ry="5" fill="#0a0a0f" stroke="#ff0033" stroke-width="0.8"/><ellipse cx="60" cy="40" rx="9" ry="7" fill="#0a0a0f" stroke="#ff0033" stroke-width="0.8"/><circle cx="60" cy="40" r="4" fill="#ff0033"/><path d="M48 58 L50 66 L52 58Z" fill="#ff0033" opacity="0.5"/></svg>
-      </div>
-      <div class="info">
-        <div class="name">SERIES X ULTRA AI</div>
-        <div class="meta" id="robotMeta">Scalping &bull; XAUUSD &bull; Auto</div>
-      </div>
-      <div class="arrow">&#8250;</div>
-    </div>
-
     <div class="mini-log" id="miniLog"></div>
   </div>
 </div>
 
-<!-- TRADING PAIRS -->
-<div id="scrSymbols" class="screen">
-  <div class="screen-header"><div class="back" onclick="showScreen('dash')">&#8249;</div><h2>Trading Pairs</h2></div>
-  <div class="screen-body">
-    <p style="font-size:12px; color:var(--dim); margin-bottom:8px;">Trading pair — tap to search all available symbols from your connected broker.</p>
-    <input id="symSearch" placeholder="Tap to search/add a symbol..." autocomplete="off" onkeydown="if(event.key==='Enter')pickFirstSearchMatch();" style="width:100%; margin-bottom:0;">
-    <div id="symSearchResults" style="max-height:240px; overflow-y:auto; display:none; background:#1a1a25; border:1px solid #2a2a3a; border-radius:10px; margin-top:6px; margin-bottom:10px;"></div>
-    <p id="symSearchStatus" style="font-size:11px; color:var(--dim); margin:-4px 0 12px;"></p>
-    <div class="section-title" style="margin-top:0;">Your Symbols</div>
-    <div id="symbolList"></div>
-  </div>
-</div>
+<!-- (removed: separate full-screen Trading Pairs page — now an inline
+     panel right above the chart, see #symbolPickerPanel in scrDash) -->
 
 <!-- NEWS MODAL -->
 <div id="newsModal" class="news-modal">
@@ -589,7 +560,7 @@ const SYM_DEFS={
 let state={
   broker:'ctrader',env:'demo',connected:false,accountReady:false,accountId:null,moneyDigits:2,
   ws:null,msgSeq:0,hbTimer:null,wasEverConnected:false,ctReconnectTimer:null,
-  paused:false,stopped:true,auto:false,paper:false,armed:false,newsTrading:false,
+  paused:false,stopped:true,auto:false,paper:true,armed:false,newsTrading:false,
   balance:0,equity:0,paperBalance:10000,startBalance:null,
   wins:0,losses:0,todayPnl:0,todayKey:'',
   assets:{},currentSymbol:'XAUUSD',symbolsByNorm:{},bnSymbolList:[],pendingTrendbarRequests:{},
@@ -601,25 +572,25 @@ let state={
 let cfg={
   strategy:'emaRide',
   lotSize:0.01,posPerEntry:3,maxPositions:0,basketProfit:5,cooldownSec:60,
-  tf:15,slDollars:15,maxHoldMin:5,maxSpreadPct:0.5,
+  tf:15,slDollars:15,trailBuffer:2,maxHoldMin:5,maxSpreadPct:0.5,
   autoReverse:true,
   // FIX ("closing with smaller tp... not the one i setup"): this used to
-  // default to true. Profit Protection watches floating profit and, once it
-  // first reaches profitLockArm ($0.38 by default), arms; from then on it
-  // tracks the real peak floating profit reaches and closes for real the
-  // instant profit gives back profitLockGiveback ($0.08 by default) from
-  // that peak — same idea as your reference bot's Arm/Giveback system, not
-  // a fixed lock line and not a quiet SL trail. If price keeps running in
-  // your favor it never fires at all; your real Basket Profit target still
-  // closes it the normal way. Off by default — trades run to your real
-  // Basket Profit (or Stop Loss) target and nothing in between unless you
-  // turn this on.
-  profitProtect:false,profitLockArm:0.38,profitLockGiveback:0.08,dailyProfitTarget:0,dailyLossLimit:0,
-  // Stage 1 of the auto-AI build: draw the current support/resistance
-  // (consolidation) zone on the chart, the same idea as the "FOMC" bands in
-  // the screenshot the user sent. On by default, off with the Zone Overlay
-  // switch. Detection lives in computeZone(); drawing in drawZones().
-  showZones:true,
+  // default to true. Profit Protection is a trailing stop that arms once a
+  // trade reaches cfg.trailBuffer ($2 by default) in floating profit, then
+  // locks ~90% of whatever the CURRENT profit is at that moment minus a
+  // $1.50 cushion — and closes the trade the instant price pulls back to
+  // that locked level, completely independent of your actual configured
+  // Basket Profit (take-profit) target. On a volatile symbol like XAU/USD
+  // that lock can arm and trigger within seconds of opening, closing a
+  // trade for a few cents while the real take-profit you set is still far
+  // away — which is exactly what you were seeing. It's not a bug in the
+  // sense of doing the wrong math; it's a real feature (an early, smaller,
+  // safer profit) that was just silently overriding the TP you actually
+  // configured. Off by default now — trades run to your real Basket
+  // Profit target (or your real Stop Loss) and nothing in between. Flip
+  // Settings > Profit Protection back on any time you DO want that
+  // early-lock behavior.
+  profitProtect:false,dailyProfitTarget:0,dailyLossLimit:0,
   // ---- Ported from the Pepperstone scalper bot ----------------------------
   // Shared by Confluence/RSI-Extreme/Grid's reversal entry mode.
   rsiPeriod:6,
@@ -640,7 +611,7 @@ let cfg={
   // Grid / Ladder Scalping — batch/pyramid entry mode + risk controls.
   gridEntryMode:'momentum',gridMaxLevels:6,gridMaxDD:15,
   gridRsiOS:30,gridRsiOB:70,
-  gridProfitLock:true,gridProfitLockGiveback:0.15
+  gridProfitLock:true,gridProfitLockArm:0.38,gridProfitLockGiveback:0.08,gridTP:0.5
 };
 // Presets just auto-fill the same fields every strategy already uses — you can
 // still edit any of them by hand afterward. EMA Ride/Pullback additionally
@@ -665,11 +636,11 @@ function applyStrategyPreset(){
   const key=$('cfgStrategy').value;
   const p=STRATEGY_PRESETS[key];
   $('strategyHint').textContent=p.hint||'';
-  if(p.tf!=null)$('cfgTF').value=p.tf;
+  if(p.tf!=null){cfg.tf=p.tf;renderChartTfButtons();}
   if(p.slDollars!=null)$('cfgSL').value=p.slDollars;
-  if(p.basketProfit!=null)$('cfgBasket').value=p.basketProfit;
+  if(p.basketProfit!=null)cfg.basketProfit=p.basketProfit;
   if(p.cooldownSec!=null)$('cfgCool').value=p.cooldownSec;
-  if(p.maxHoldMin!=null)$('cfgHold').value=p.maxHoldMin;
+  if(p.maxHoldMin!=null)cfg.maxHoldMin=p.maxHoldMin;
 }
 let tvChart=null, candleSeries=null, emaLine1=null, emaLine2=null, emaLine3=null;
 // Running state for the incremental chart updater (appendChartBar) — lets a
@@ -706,7 +677,9 @@ function showScreen(id,fromPopstate){
       tvChart.resize(chartEl.clientWidth,220);
     }
   }
-  else if(id==='symbols')$('scrSymbols').classList.add('active');
+  // (removed: else if(id==='symbols') branch — Trading Pairs is now an
+  // inline panel inside scrDash, not a separate screen; see
+  // toggleSymbolPicker())
   // FIX #15 ("the phone's back button doesn't go back to the login page —
   // it just leaves the app"): none of these in-app screen changes were ever
   // recorded in browser history, so Android's hardware/gesture back button
@@ -843,13 +816,10 @@ function loadConfigUI(){
   $('cfgLot').value=cfg.lotSize;
   $('cfgPosCount').value=cfg.posPerEntry;
   $('cfgMaxPos').value=cfg.maxPositions;
-  $('cfgTF').value=cfg.tf;
-  $('cfgBasket').value=cfg.basketProfit;
+  renderChartTfButtons(); // timeframe is now shown/set only via the chart's own buttons
   $('cfgCool').value=cfg.cooldownSec;
   $('cfgSL').value=cfg.slDollars;
-  $('cfgProfitArm').value=cfg.profitLockArm;
-  $('cfgProfitGiveback').value=cfg.profitLockGiveback;
-  $('cfgHold').value=cfg.maxHoldMin;
+  $('cfgTrail').value=cfg.trailBuffer;
   $('cfgSpread').value=cfg.maxSpreadPct;
   $('cfgProfitStop').value=cfg.dailyProfitTarget;
   $('cfgLossStop').value=cfg.dailyLossLimit;
@@ -866,14 +836,16 @@ function loadConfigUI(){
   $('cfgGridEntryMode').value=cfg.gridEntryMode;
   $('cfgGridMaxLevels').value=cfg.gridMaxLevels;
   $('cfgGridMaxDD').value=cfg.gridMaxDD;
+  $('cfgGridTP').value=cfg.gridTP;
   $('cfgGridRsiOS').value=cfg.gridRsiOS;
   $('cfgGridRsiOB').value=cfg.gridRsiOB;
   $('swGridProfitLock').classList.toggle('on',cfg.gridProfitLock);
+  $('cfgGridProfitLockArm').value=cfg.gridProfitLockArm;
   $('cfgGridProfitLockGiveback').value=cfg.gridProfitLockGiveback;
   $('swReverse').classList.toggle('on',cfg.autoReverse);
   $('swProtect').classList.toggle('on',cfg.profitProtect);
-  $('swZones').classList.toggle('on',cfg.showZones);
   $('swNewsTrade').classList.toggle('on',state.newsTrading);
+  $('swPaper').classList.toggle('on',state.paper);
   $('swArm').classList.toggle('on',state.armed);
 }
 function saveConfig(){
@@ -881,13 +853,12 @@ function saveConfig(){
   cfg.lotSize=parseFloat($('cfgLot').value)||0.01;
   cfg.posPerEntry=parseInt($('cfgPosCount').value)||1;
   cfg.maxPositions=parseInt($('cfgMaxPos').value)||0;
-  cfg.tf=parseInt($('cfgTF').value)||15;
-  cfg.basketProfit=parseFloat($('cfgBasket').value)||5;
+  // cfg.tf: no longer read from a settings field — set directly by the
+  // chart's own timeframe buttons (renderChartTfButtons()'s onclick), so
+  // whatever the chart is showing is exactly what the strategy uses.
   cfg.cooldownSec=parseInt($('cfgCool').value)||60;
   cfg.slDollars=parseFloat($('cfgSL').value)||15;
-  cfg.profitLockArm=Math.max(0.01,parseFloat($('cfgProfitArm').value)||0.38);
-  cfg.profitLockGiveback=Math.max(0,parseFloat($('cfgProfitGiveback').value)||0.08);
-  cfg.maxHoldMin=parseInt($('cfgHold').value)||5;
+  cfg.trailBuffer=parseFloat($('cfgTrail').value)||2;
   cfg.maxSpreadPct=parseFloat($('cfgSpread').value)||0.5;
   cfg.dailyProfitTarget=parseFloat($('cfgProfitStop').value)||0;
   cfg.dailyLossLimit=parseFloat($('cfgLossStop').value)||0;
@@ -904,14 +875,16 @@ function saveConfig(){
   cfg.gridEntryMode=$('cfgGridEntryMode').value;
   cfg.gridMaxLevels=parseInt($('cfgGridMaxLevels').value)||6;
   cfg.gridMaxDD=parseFloat($('cfgGridMaxDD').value)||0;
+  cfg.gridTP=parseFloat($('cfgGridTP').value)||0.5;
   cfg.gridRsiOS=parseFloat($('cfgGridRsiOS').value)||30;
   cfg.gridRsiOB=parseFloat($('cfgGridRsiOB').value)||70;
   cfg.gridProfitLock=$('swGridProfitLock').classList.contains('on');
-  cfg.gridProfitLockGiveback=parseFloat($('cfgGridProfitLockGiveback').value)||0.15;
+  cfg.gridProfitLockArm=parseFloat($('cfgGridProfitLockArm').value)||0.38;
+  cfg.gridProfitLockGiveback=parseFloat($('cfgGridProfitLockGiveback').value)||0.08;
   cfg.autoReverse=$('swReverse').classList.contains('on');
   cfg.profitProtect=$('swProtect').classList.contains('on');
-  cfg.showZones=$('swZones').classList.contains('on');
   state.newsTrading=$('swNewsTrade').classList.contains('on');
+  state.paper=$('swPaper').classList.contains('on');
   state.armed=$('swArm').classList.contains('on');
   saveCreds();
   renderChartTfButtons();
@@ -919,12 +892,8 @@ function saveConfig(){
   toggleSettingsPanel(false);
   log('Config saved for '+state.currentSymbol);
 }
-// FIX (paper mode removed entirely per user request — the bot now always
-// places real orders through realOpen()/realClose(), against whichever
-// account Demo/Live has you connected to via switchEnv()): toggleArm() used
-// to refuse to arm while Paper Mode was on. That gate is gone along with
-// Paper Mode itself — arming just arms.
-function toggleArm(){$('swArm').classList.toggle('on');state.armed=$('swArm').classList.contains('on');saveCreds();}
+function updatePaper(){state.paper=$('swPaper').classList.contains('on');}
+function toggleArm(){if(!state.paper){$('swArm').classList.toggle('on');state.armed=$('swArm').classList.contains('on');saveCreds();return;}alert('Turn Paper Mode OFF first');}
 // Inline Strategy/Lot/SL-TP/Speed panel — replaces navigating to a separate
 // Config screen. pass true/false to force it open/closed, or call with no
 // argument to just toggle. Opening always refreshes the fields for
@@ -961,11 +930,18 @@ function renderSymbolList(){
 // existing card in Your Symbols and by tapping a result in the live search
 // below. Pulled out of renderSymbolList's old inline onclick so both paths
 // stay in sync instead of drifting.
+function toggleSymbolPicker(forceState){
+  const panel=$('symbolPickerPanel');if(!panel)return;
+  const show=forceState!==undefined?forceState:(panel.style.display==='none');
+  panel.style.display=show?'block':'none';
+  if(show)renderSymbolList();
+}
 function selectSymbol(key){
   // FIX #14 (continued) — deactivate every other tracked asset first,
   // so only the one you're actually switching to stays live.
   Object.keys(state.assets).forEach(k=>{if(k!==key)deactivateAsset(k);});
-  state.currentSymbol=key;initAsset();renderSymbolList();showScreen('dash');toggleSettingsPanel(true);
+  state.currentSymbol=key;initAsset();renderSymbolList();toggleSymbolPicker(false);toggleSettingsPanel(true);
+  setText('curSymbolName',def_or(key));
   // Actually subscribe/load data for the newly picked symbol (see fix note
   // on activateCtSymbol above) — this used to silently do nothing.
   if(state.accountReady){
@@ -1084,19 +1060,6 @@ document.addEventListener('DOMContentLoaded',()=>{
 // notices.
 window.addEventListener('pagehide',()=>{if(state.ws){try{state.ws.close(1000,'page hidden');}catch(e){}}});
 
-// Demo/Live switch, now live on the dashboard instead of only on the login
-// screen — same idea as the Pepperstone reference bot's env-switch buttons.
-// Requires already being connected once (Client ID/Secret/Token saved);
-// flipping this just reconnects the same credentials against the other
-// environment's servers, same reconnect path connectCT() already uses.
-function switchEnv(newEnv){
-  if(state.env===newEnv)return;
-  if(!state.clientId&&!$('ctId').value.trim()){alert('Connect once first (Client ID/Secret/Token), then you can switch Demo/Live from here any time.');return;}
-  if(newEnv==='live'&&!confirm('Switch to LIVE? Real orders will be placed on your real account. Continue?'))return;
-  $('ctEnv').value=newEnv;
-  log('Switching to '+newEnv.toUpperCase()+'...');
-  connectCT();
-}
 function connectCT(){
   if(state.connecting){ctStatus('Already connecting — please wait...');return;}
   state.connecting=true;
@@ -1258,11 +1221,12 @@ function applyBNAccount(acct){if(!acct||acct.error)return;if(acct.balances){cons
 // ========== ASSET INIT ==========
 function initAsset(){
   const sym=state.currentSymbol;const def=SYM_DEFS[sym];if(!def)return;
-  if(!state.assets[sym])state.assets[sym]={key:sym,label:def.label,name:def.name,symbolId:null,full:null,lastPrice:0,bid:null,ask:null,bars1:[],bars5:[],bars15:[],bars30:[],bars60:[],currentBar:null,dataReady:false,positions:[],signal:'WAIT',score:0,streak:0,lastDir:'WAIT',lastTradeAt:0,lastCloseAt:0,floatingPnL:0,emaFast:null,emaSlow:null,emaTrend:null,rsi:null,atr:null,momentum:0,orderPending:false,orderPendingAt:0,forceNextSide:null,tradingEnabled:true,profitLockArmed:false,profitLockSide:null,profitLockPeak:0};
+  if(!state.assets[sym])state.assets[sym]={key:sym,label:def.label,name:def.name,symbolId:null,full:null,lastPrice:0,bid:null,ask:null,bars1:[],bars5:[],bars15:[],bars30:[],bars60:[],currentBar:null,dataReady:false,positions:[],signal:'WAIT',score:0,streak:0,lastDir:'WAIT',lastTradeAt:0,lastCloseAt:0,floatingPnL:0,emaFast:null,emaSlow:null,emaTrend:null,rsi:null,atr:null,momentum:0,orderPending:false,orderPendingAt:0,forceNextSide:null,tradingEnabled:true};
   const a=state.assets[sym];a.bnSymbol=def.bn;
   a.tradingEnabled=true; // FIX #14 (continued) — re-selecting a previously deactivated symbol reactivates it
   setText('sigPair',def.label+' - '+def.name);
-  setText('robotMeta',STRATEGY_LABELS[cfg.strategy]+' &bull; '+def.label+' &bull; '+(state.auto?'Auto':'Manual'));
+  setText('curSymbolMeta',STRATEGY_LABELS[cfg.strategy]+' &bull; '+def.label+' &bull; '+(state.auto?'Auto':'Manual'));
+  setText('curSymbolName',def.label);
 }
 function initAssetBN(){initAsset();const a=state.assets[state.currentSymbol];if(a)a.bnSymbol=SYM_DEFS[state.currentSymbol].bn;bnSubscribe(a);bnSeed(a);}
 
@@ -1605,7 +1569,6 @@ function redrawChart(resetZoom){
   chartLive.base2=e2Full.length>1?e2Full[e2Full.length-2]:null;
   chartLive.base3=(p3&&e3Full.length>1)?e3Full[e3Full.length-2]:null;
   chartLive.lastBarTime=times.length?times[times.length-1]:null;
-  drawZones(a);
 }
 // Incremental counterpart to redrawChart() — appends exactly one candle and
 // one point per EMA line via the chart library's own update() (which
@@ -1639,7 +1602,6 @@ function appendChartBar(a,bar){
     emaLine3.update({time:t,value:chartLive.cur3});
   }
   chartLive.lastBarTime=t;
-  drawZones(a);
 }
 function updateChart(a,price,now){
   if(!candleSeries||!a.currentBar||a.key!==state.currentSymbol)return; // don't let a background symbol's ticks bleed onto the visible chart
@@ -1877,58 +1839,6 @@ function bollingerLast(closes,period,mult){
   return {mid:mean,upper:mean+mult*sd,lower:mean-mult*sd};
 }
 
-// ---- Stage 1: Zone detection + drawing (auto-AI build, step 1 of 6) -------
-// Finds the most recent tight consolidation range in the active timeframe's
-// bars — the same kind of support/resistance "box" the user's screenshot
-// shows around the FOMC session. Deliberately simple and read-only: it only
-// looks at candles already in a.bars/tfBars, never touches trading logic,
-// so it can't affect entries/exits/lot size. Stage 2 (SL/TP off zone size)
-// will read this same zone; nothing wired to real orders yet.
-function computeZone(a){
-  const bars=tfBars(a,cfg.tf);
-  if(!bars||bars.length<30)return null;
-  const lookback=Math.min(60,bars.length);
-  const recent=bars.slice(-lookback);
-  // Exclude the most recent few bars — if price is mid-breakout right now,
-  // those bars are the move itself, not the consolidation that preceded it.
-  const breakoutBars=5;
-  const searchable=recent.slice(0,Math.max(0,recent.length-breakoutBars));
-  if(searchable.length<10)return null;
-  const win=8;
-  let best=null;
-  for(let i=0;i<=searchable.length-win;i++){
-    const w=searchable.slice(i,i+win);
-    const hi=Math.max(...w.map(b=>b.h));
-    const lo=Math.min(...w.map(b=>b.l));
-    const range=hi-lo;
-    if(!best||range<best.range)best={range,hi,lo};
-  }
-  if(!best)return null;
-  // Only call it a real zone if it's meaningfully tighter than typical
-  // recent volatility (ATR) — otherwise it's just noise, not a range.
-  const atrRef=a.atr||(best.range/1.2);
-  if(atrRef&&best.range>atrRef*2.2)return null;
-  return {top:best.hi,bottom:best.lo};
-}
-let zoneLines={top:null,bottom:null};
-function clearZoneLines(){
-  if(!candleSeries)return;
-  if(zoneLines.top){try{candleSeries.removePriceLine(zoneLines.top);}catch(e){}zoneLines.top=null;}
-  if(zoneLines.bottom){try{candleSeries.removePriceLine(zoneLines.bottom);}catch(e){}zoneLines.bottom=null;}
-}
-// Draws the zone as two dashed horizontal lines (top/bottom) on the active
-// chart — native lightweight-charts price lines, so it can't corrupt the
-// candle/EMA series next to it. Called from redrawChart() (full rebuilds)
-// and appendChartBar() (each new closed bar) — both already gate on the
-// asset actually being the one currently on screen.
-function drawZones(a){
-  clearZoneLines();
-  if(!cfg.showZones||!candleSeries||!a||a.key!==state.currentSymbol)return;
-  const z=computeZone(a);
-  if(!z)return;
-  zoneLines.top=candleSeries.createPriceLine({price:z.top,color:'#00e0c0',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Zone'});
-  zoneLines.bottom=candleSeries.createPriceLine({price:z.bottom,color:'#00e0c0',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Zone'});
-}
 function computeIndicators(a){
   // FIX #16 ("scalping opens BUY while price is actively falling, or vice
   // versa"): every indicator here used to read only from a.bars1 — CLOSED
@@ -2288,9 +2198,10 @@ function maybeTradeGrid(a){
   if(a.lastTradeAt&&now-a.lastTradeAt<cfg.cooldownSec*1000)return;
   const level=Math.min(a.gridLevel,cfg.gridMaxLevels||6);
   a.gridPeakFloating=0; // fresh round — profit-lock tracks from zero again
+  a.gridProfitLockArmed=false;
   a.gridSide=a.signal;
   a.gridTargetLevel=level;
-  log('Grid: opening level '+level+' round, '+a.signal+' on '+a.label+' — batch target +$'+(level*0.5).toFixed(2)+'.');
+  log('Grid: opening level '+level+' round, '+a.signal+' on '+a.label+' — batch target +$'+(level*(cfg.gridTP||0.5)).toFixed(2)+'.');
   executeTrade(a,a.signal);
 }
 
@@ -2676,7 +2587,8 @@ function checkGridExit(a){
   if(!a.gridLevel)a.gridLevel=1;
   const level=a.positions.length;
   const floating=a.floatingPnL;
-  const target=level*0.5;
+  const perLegTP=cfg.gridTP||0.5; // now settable — used to be hardcoded to 0.5
+  const target=level*perLegTP;
   if(a.gridPeakFloating==null||floating>a.gridPeakFloating)a.gridPeakFloating=floating;
   if(floating>=target){
     log('Grid: batch target +$'+target.toFixed(2)+' reached ('+fmtPnL(floating)+') on '+a.label+' — closing round, next round opens level '+Math.min(level+1,cfg.gridMaxLevels||6)+'.');
@@ -2684,12 +2596,41 @@ function checkGridExit(a){
     closeAllPositions(a);
     return;
   }
-  if(cfg.gridProfitLock&&a.gridPeakFloating>0&&(a.gridPeakFloating-floating)>=(cfg.gridProfitLockGiveback||0.15)){
+  // FIX/UPGRADE (matching our other bot's profit-lock exactly): this used
+  // to arm the instant floating went above $0 at all — no real threshold,
+  // so it was watching for a giveback on noise-level floats, not real
+  // profit. Now it only arms once the peak reaches gridProfitLockArm, then
+  // — same as before — gives back gridProfitLockGiveback from whatever
+  // peak it actually reaches, not a fixed line.
+  const armLevel=cfg.gridProfitLockArm||0.38;
+  const givebackAmt=cfg.gridProfitLockGiveback||0.08;
+  if(cfg.gridProfitLock&&!a.gridProfitLockArmed&&a.gridPeakFloating>=armLevel){
+    a.gridProfitLockArmed=true;
+    log('🔒 Profit protection armed at +$'+a.gridPeakFloating.toFixed(2)+' ('+level+' pos) on '+a.label+' — will lock in and reverse if it gives back $'+givebackAmt.toFixed(2)+' from whatever high it reaches.');
+  }
+  if(cfg.gridProfitLock&&a.gridProfitLockArmed&&(a.gridPeakFloating-floating)>=givebackAmt){
     log('Grid: profit-lock — banking '+fmtPnL(floating)+' on '+a.label+' before it slips further, flipping opposite next round (same size).');
     const side=a.positions[0]?a.positions[0].side:null;
     const keepLevel=level;
     closeAllPositions(a);
-    if(side){a.gridLevel=keepLevel;a.forceNextSide=side==='BUY'?'SELL':'BUY';}
+    if(side){
+      const flipSide=side==='BUY'?'SELL':'BUY';
+      a.gridLevel=keepLevel;
+      a.forceNextSide=flipSide;
+      // FIX (the actual root cause of "opening both directions at once" —
+      // confirmed in your log: a flip meant to open 4 BUY legs instead
+      // opened 3 SELL + 1 BUY): maybeTrade's forceNextSide branch only
+      // fires the FIRST leg of the flip, then hands off to
+      // maybeTradeGrid() for every leg after that — but maybeTradeGrid
+      // builds legs using a.gridSide/a.gridTargetLevel, which this branch
+      // never updated. So it kept building the round with the OLD side
+      // and OLD target level while the first leg had already gone the
+      // NEW way — literally mixing both directions in one round, every
+      // single time profit-lock flipped. Now both are set here too, so
+      // every leg after the first matches the flip, not the stale round.
+      a.gridSide=flipSide;
+      a.gridTargetLevel=keepLevel;
+    }
     return;
   }
   const maxDD=cfg.gridMaxDD||0;
@@ -2701,48 +2642,38 @@ function checkGridExit(a){
   }
 }
 
-// FIX (per user's direct instruction — port the reference bot's profit-lock
-// system in exactly): Arm ($) is the floating profit that first arms
-// protection; from then on it tracks the REAL peak floating profit reaches
-// and closes immediately, for real, the moment profit gives back Giveback
-// ($) from that peak — not a fixed lock line computed once at arm time, and
-// not a quiet SL trail that only helps if price later gaps through it. If
-// price keeps running in your favor and hits the real Basket Profit target
-// first, this never fires at all.
+// Ported from our tested build: continuous profit-lock, not a crude "close if
+// PnL drops below 50% of peak" — that old rule could give back nearly half of
+// a winning trade before doing anything. This locks in ~90% of profit above a
+// small $1.50 cushion, only ever tightening, never loosening.
+// FIX: the old version applied cfg.trailBuffer (a DOLLAR amount, per its own
+// "$" label) directly as a raw PRICE offset — harmless-looking on XAU/USD
+// (~4597) but would have been catastrophic on EUR/USD (~1.17), moving the stop
+// by a nonsensical multi-unit distance. Now correctly converted through the
+// symbol's real $-per-price-unit.
 function checkTrail(a){
-  if(!a.positions.length){
-    if(a.profitLockArmed){a.profitLockArmed=false;a.profitLockSide=null;a.profitLockPeak=0;}
-    return;
-  }
-  const side=a.positions[0].side;
-  const floating=a.positions.reduce((sum,p)=>sum+p.floatingPnL,0);
-  if(cfg.profitProtect){
-    if(!a.profitLockArmed){
-      if(floating>=cfg.profitLockArm){
-        a.profitLockArmed=true;
-        a.profitLockSide=side;
-        a.profitLockPeak=floating;
-        log('Profit protection armed on '+a.label+' at +$'+floating.toFixed(2)+' — will close if it gives back $'+cfg.profitLockGiveback.toFixed(2)+' from whatever high it reaches.');
-      }
-    }else{
-      a.profitLockSide=side;
-      if(floating>a.profitLockPeak)a.profitLockPeak=floating;
-      const lockLevel=a.profitLockPeak-cfg.profitLockGiveback;
-      if(floating<=lockLevel){
-        log('Profit protection closing '+a.label+' — gave back $'+(a.profitLockPeak-floating).toFixed(2)+' from its peak of +$'+a.profitLockPeak.toFixed(2)+', now at +$'+floating.toFixed(2)+'.');
-        a.profitLockArmed=false;a.profitLockSide=null;a.profitLockPeak=0;
-        closeAllPositions(a);
-        return;
+  if(!a.positions.length)return;
+  const digits=digitsFor(a);
+  a.positions.forEach(p=>{
+    if(!p.paper)return;
+    const dollarPerUnit=dollarPerUnitFor(p.volume,a);
+    if(dollarPerUnit<=0)return;
+    // Profit-lock ratcheting is optional (cfg.profitProtect) — but the basic
+    // stop-loss hit check below is NOT optional and always runs regardless.
+    if(cfg.profitProtect){
+      const armAt=cfg.trailBuffer!=null?cfg.trailBuffer:0.5;
+      if(p.floatingPnL>=armAt){
+        const lockedProfit=Math.max(0,0.9*p.floatingPnL-1.5);
+        const lockedOffset=lockedProfit/dollarPerUnit;
+        let candidateStop=p.side==='BUY'?p.entryPrice+lockedOffset:p.entryPrice-lockedOffset;
+        candidateStop=roundToDigits(candidateStop,digits);
+        const improves=p.stopLoss==null?true:(p.side==='BUY'?candidateStop>p.stopLoss:candidateStop<p.stopLoss);
+        if(improves){p.stopLoss=candidateStop;p.trailingActive=true;}
       }
     }
-  }else if(a.profitLockArmed){
-    a.profitLockArmed=false;a.profitLockSide=null;a.profitLockPeak=0;
-  }
-  // Hard stop-loss check always runs, independent of profit protection.
-  a.positions.forEach(p=>{
     if(p.stopLoss==null)return;
-    if(p.side==='BUY'&&a.lastPrice<=p.stopLoss){log('Stop loss closing '+a.label+' ('+fmtPnL(p.floatingPnL)+').');closeAllPositions(a);}
-    if(p.side==='SELL'&&a.lastPrice>=p.stopLoss){log('Stop loss closing '+a.label+' ('+fmtPnL(p.floatingPnL)+').');closeAllPositions(a);}
+    if(p.side==='BUY'&&a.lastPrice<=p.stopLoss){log((p.trailingActive?'Profit lock':'Stop loss')+' closing '+a.label+' ('+fmtPnL(p.floatingPnL)+').');closeAllPositions(a);}
+    if(p.side==='SELL'&&a.lastPrice>=p.stopLoss){log((p.trailingActive?'Profit lock':'Stop loss')+' closing '+a.label+' ('+fmtPnL(p.floatingPnL)+').');closeAllPositions(a);}
   });
 }
 
@@ -3081,9 +3012,7 @@ function updateDash(){
   setText('sigPrice',a.lastPrice?a.lastPrice.toFixed(a.full?a.full.digits:5):'-');
   const sig=$('sigText');if(sig){sig.textContent=a.signal;sig.className='sig '+a.signal;}
   setText('sigScore','Signal strength: '+a.score+'% | Streak: '+a.streak);
-  setText('robotMeta',STRATEGY_LABELS[cfg.strategy]+' &bull; '+a.label+' &bull; '+(state.auto?'Auto':'Manual')+(state.newsBlackout?' &bull; NEWS BLACKOUT':'')+(state.newsMode?' &bull; NEWS MODE':''));
-  const envD=$('envDemoBtn'),envL=$('envLiveBtn');
-  if(envD&&envL){envD.classList.toggle('active',state.env!=='live');envL.classList.toggle('active',state.env==='live');}
+  setText('curSymbolMeta',STRATEGY_LABELS[cfg.strategy]+' &bull; '+a.label+' &bull; '+(state.auto?'Auto':'Manual')+(state.newsBlackout?' &bull; NEWS BLACKOUT':'')+(state.newsMode?' &bull; NEWS MODE':''));
   renderPositionsPanel();
 }
 
@@ -3246,8 +3175,8 @@ window.MeganBotAdapter = {
     if(a)lines.push('Current signal on '+a.label+' is '+a.signal+' at '+a.score+'% strength, streak '+a.streak+'.');
     return lines.join(' ');
   },
-  paperOn(){ log('Paper Mode has been removed — the bot always trades for real now (Demo or Live, switchable on the dashboard).'); },
-  paperOff(){ log('Paper Mode has been removed — nothing to turn off; the bot always trades for real (Demo or Live).'); },
+  paperOn(){ if(!state.paper){$('swPaper').classList.add('on');updatePaper();} },
+  paperOff(){ if(state.paper){$('swPaper').classList.remove('on');updatePaper();} },
   pauseTrading(){ if(!state.stopped) toggleStop(); },
   resumeTrading(){ if(state.stopped) toggleStop(); },
   autoOn(){ if(!state.auto) toggleAuto(); },
