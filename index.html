@@ -140,6 +140,7 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
 .badge.off{color:var(--dim); border-color:var(--line);}
 .env-btn{cursor:pointer; opacity:.4;}
 .env-btn.active{opacity:1;}
+.env-row{display:flex; justify-content:center; gap:8px; margin:6px 0 2px;}
 
 /* Conn status */
 .conn-status{position:absolute; top:12px; right:16px; z-index:10;}
@@ -317,8 +318,6 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
 <div id="scrDash" class="screen">
   <div class="conn-status">
     <span id="connBadge" class="badge off">OFFLINE</span>
-    <span id="envDemoBtn" class="badge demo env-btn" onclick="switchEnv('demo')" style="margin-left:6px;">DEMO</span>
-    <span id="envLiveBtn" class="badge live env-btn" onclick="switchEnv('live')" style="margin-left:4px;">LIVE</span>
   </div>
   <div class="dash-scroll" id="dashScroll">
     <!-- FIX (live 3D Megan replaces the old static header robot): removed
@@ -327,6 +326,17 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
     <div class="robot-hero">
       <div class="robot-title">SERIES X ULTRA AI</div>
       <div class="robot-sub">HUNDIO</div>
+    </div>
+
+    <!-- FIX ("two demo option which are not even working... look stupid"):
+         these used to live inside .conn-status, which is position:absolute
+         top-right — a tiny corner box never sized for two extra badges, so
+         they visually crushed into and overlapped the robot-title text
+         instead of sitting in their own row. Moved into the normal in-flow
+         layout, its own centered row, so nothing overlaps. -->
+    <div class="env-row">
+      <span id="envDemoBtn" class="badge demo env-btn" onclick="switchEnv('demo')">DEMO</span>
+      <span id="envLiveBtn" class="badge live env-btn" onclick="switchEnv('live')">LIVE</span>
     </div>
 
     <div class="ctrl-bar">
