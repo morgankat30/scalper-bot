@@ -273,8 +273,9 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
     <label>Client Secret</label><input id="ctSec" type="password" placeholder="Client Secret">
     <label>Access Token</label><input id="ctTok" type="password" placeholder="Access Token">
     <label>Refresh Token (optional)</label><input id="ctRef" type="password" placeholder="Refresh Token">
-    <label>Environment</label>
-    <select id="ctEnv"><option value="demo">Demo account (paper money — start here)</option><option value="live">Live account (real money)</option></select>
+    <!-- Environment (demo/live) moved into the dashboard itself — see the
+         Demo/Live pill near the top and switchEnv(). Connects with whatever
+         state.env currently is (defaults to 'demo') rather than a login field. -->
     <div class="tog" style="margin-top:10px;">
       <div><b>Remember login</b><small>Saves these fields in this browser so you don't retype them. Anyone with access to this phone/browser could see them.</small></div>
       <div class="switch" id="swRemCT" onclick="this.classList.toggle('on')"></div>
@@ -313,7 +314,14 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
 
 <!-- MAIN DASHBOARD -->
 <div id="scrDash" class="screen">
-  <div class="conn-status"><span id="connBadge" class="badge off">OFFLINE</span></div>
+  <div class="conn-status">
+    <span id="connBadge" class="badge off">OFFLINE</span>
+    <!-- Demo/Live moved here from the login page, matching our other bot —
+         tap to reconnect the SAME credentials under the other environment,
+         no need to log out or go back to a separate screen. -->
+    <span id="envPillDemo" onclick="switchEnv('demo')" style="cursor:pointer; margin-left:8px; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:700; border:1px solid var(--line);">DEMO</span>
+    <span id="envPillLive" onclick="switchEnv('live')" style="cursor:pointer; margin-left:4px; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:700; border:1px solid var(--line);">LIVE</span>
+  </div>
   <div class="dash-scroll" id="dashScroll">
     <!-- FIX (live 3D Megan replaces the old static header robot): removed
          the SVG icon here too — kept the title text, since that's the
@@ -372,8 +380,10 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
         <option value="grid">Grid / Ladder Scalping — batch pyramid (from Pepperstone)</option>
       </select>
       <p id="strategyHint" style="color:var(--dim); font-size:11px; margin:4px 0 12px;"></p>
-      <label>Lot Size</label>
+      <label>Lot Size (base, before balance scaling below)</label>
       <input id="cfgLot" type="number" step="0.01" min="0.01" value="0.01">
+      <label>Balance-based scaling (% — 0 = fixed lot size, ignores balance)</label>
+      <input id="cfgRiskPercent" type="number" step="1" min="0" value="0">
       <div class="row2">
         <div><label>Positions Per Entry</label><input id="cfgPosCount" type="number" min="1" max="10" value="3"></div>
         <div><label>Max Positions</label><input id="cfgMaxPos" type="number" min="0" max="20" value="0"></div>
@@ -573,6 +583,13 @@ let cfg={
   strategy:'emaRide',
   lotSize:0.01,posPerEntry:3,maxPositions:0,basketProfit:5,cooldownSec:60,
   tf:15,slDollars:15,trailBuffer:2,maxHoldMin:5,maxSpreadPct:0.5,
+  // New — balance-based position sizing (matching our other bot):
+  // riskPercent 0 = fixed lot size (cfg.lotSize used exactly as typed).
+  // riskPercent > 0 = cfg.lotSize scales up/down with the account balance
+  // relative to whatever the balance was when this session started, so
+  // position size actually reflects the account instead of being a flat
+  // number that never changes whether the balance is $10 or $10,000.
+  riskPercent:0,
   autoReverse:true,
   // FIX ("closing with smaller tp... not the one i setup"): this used to
   // default to true. Profit Protection is a trailing stop that arms once a
@@ -723,7 +740,26 @@ function fmt$(n){return '$'+(n||0).toFixed(2);}
 function fmtPnL(n){return (n>=0?'+':'')+n.toFixed(2);}
 function todayKey(){return new Date().toISOString().slice(0,10);}
 function resetDaily(){const k=todayKey();if(state.todayKey!==k){state.todayKey=k;state.todayPnl=0;state.wins=0;state.losses=0;}}
-function setConnBadge(txt,cls){const b=$('connBadge');if(b){b.textContent=txt;b.className='badge '+cls;}}
+function setConnBadge(txt,cls){const b=$('connBadge');if(b){b.textContent=txt;b.className='badge '+cls;}updateEnvPills();}
+// New — Demo/Live moved into the dashboard, matching our other bot. Tap
+// the other pill to fully reconnect (same credentials) under the new
+// environment — reuses connectCT()'s own clean teardown-then-reopen,
+// exactly the "connect the same way ours does, not getting stuck" ask.
+function updateEnvPills(){
+  const d=$('envPillDemo'),l=$('envPillLive');if(!d||!l)return;
+  d.style.background=state.env==='demo'?'var(--green)':'transparent';
+  d.style.color=state.env==='demo'?'#000':'var(--dim)';
+  l.style.background=state.env==='live'?'var(--red)':'transparent';
+  l.style.color=state.env==='live'?'#fff':'var(--dim)';
+}
+function switchEnv(newEnv){
+  if(newEnv===state.env)return;
+  if(newEnv==='live'&&!confirm('Switch to LIVE — real money? This reconnects with the same login under the live account.'))return;
+  if(newEnv==='demo'&&state.env==='live'&&!confirm('Switch back to DEMO? This reconnects with the same login under the demo account.'))return;
+  state.env=newEnv;
+  updateEnvPills();
+  if(state.connected||state.connecting||state.ws){connectCT();} // reuses the exact same reconnect path as a dropped connection
+}
 function showLoading(t){$('loadingText').textContent=t||'Loading...';$('loadingOverlay').classList.add('active');
   // FIX: this could hang forever if the broker responds with an error partway
   // through login instead of the expected next step (confirmed: ERROR_RES was
@@ -737,19 +773,19 @@ function showLoading(t){$('loadingText').textContent=t||'Loading...';$('loadingO
 function hideLoading(){clearTimeout(state.loadingTimeout);$('loadingOverlay').classList.remove('active');state.connecting=false;setConnectBtnEnabled(true);}
 
 // ========== NAVIGATION ==========
-function chooseBroker(b){state.broker=b;if(b==='ctrader'){showScreen('loginCT');$('ctEnv').onchange=()=>{};}else{showScreen('loginBN');}}
+function chooseBroker(b){state.broker=b;if(b==='ctrader'){showScreen('loginCT');}else{showScreen('loginBN');}}
 function showNewsModal(){$('newsModal').classList.add('active');renderNewsList();}
 function hideNewsModal(){$('newsModal').classList.remove('active');}
 
 // ========== STORAGE ==========
 function saveCreds(){
-  if($('swRemCT').classList.contains('on')){localStorage.setItem('tpea_ct_id',$('ctId').value);localStorage.setItem('tpea_ct_sec',$('ctSec').value);localStorage.setItem('tpea_ct_tok',$('ctTok').value);localStorage.setItem('tpea_ct_ref',$('ctRef').value);localStorage.setItem('tpea_ct_env',$('ctEnv').value);}
+  if($('swRemCT').classList.contains('on')){localStorage.setItem('tpea_ct_id',$('ctId').value);localStorage.setItem('tpea_ct_sec',$('ctSec').value);localStorage.setItem('tpea_ct_tok',$('ctTok').value);localStorage.setItem('tpea_ct_ref',$('ctRef').value);localStorage.setItem('tpea_ct_env',state.env);}
   if($('swRemBN').classList.contains('on')){localStorage.setItem('tpea_bn_key',$('bnKey').value);localStorage.setItem('tpea_bn_sec',$('bnSec').value);localStorage.setItem('tpea_bn_env',$('bnEnv').value);localStorage.setItem('tpea_bn_rel',$('bnRelay').value);}
   localStorage.setItem('tpea_cfg',JSON.stringify(cfg));
   localStorage.setItem('tpea_sym',state.currentSymbol);
 }
 function loadCreds(){
-  const a=localStorage.getItem('tpea_ct_id');if(a){$('ctId').value=a;$('ctSec').value=localStorage.getItem('tpea_ct_sec')||'';$('ctTok').value=localStorage.getItem('tpea_ct_tok')||'';$('ctRef').value=localStorage.getItem('tpea_ct_ref')||'';$('ctEnv').value=localStorage.getItem('tpea_ct_env')||'demo';$('swRemCT').classList.add('on');}
+  const a=localStorage.getItem('tpea_ct_id');if(a){$('ctId').value=a;$('ctSec').value=localStorage.getItem('tpea_ct_sec')||'';$('ctTok').value=localStorage.getItem('tpea_ct_tok')||'';$('ctRef').value=localStorage.getItem('tpea_ct_ref')||'';state.env=localStorage.getItem('tpea_ct_env')||'demo';updateEnvPills();$('swRemCT').classList.add('on');}
   const k=localStorage.getItem('tpea_bn_key');if(k){$('bnKey').value=k;$('bnSec').value=localStorage.getItem('tpea_bn_sec')||'';$('bnEnv').value=localStorage.getItem('tpea_bn_env')||'testnet';$('bnRelay').value=localStorage.getItem('tpea_bn_rel')||'http://localhost:8788';$('swRemBN').classList.add('on');}
   const c=localStorage.getItem('tpea_cfg');if(c){cfg=JSON.parse(c);}
   const s=localStorage.getItem('tpea_sym');if(s)state.currentSymbol=s;
@@ -814,6 +850,7 @@ function loadConfigUI(){
   $('cfgStrategy').value=cfg.strategy;
   $('strategyHint').textContent=(STRATEGY_PRESETS[cfg.strategy]||{}).hint||'';
   $('cfgLot').value=cfg.lotSize;
+  $('cfgRiskPercent').value=cfg.riskPercent;
   $('cfgPosCount').value=cfg.posPerEntry;
   $('cfgMaxPos').value=cfg.maxPositions;
   renderChartTfButtons(); // timeframe is now shown/set only via the chart's own buttons
@@ -851,6 +888,7 @@ function loadConfigUI(){
 function saveConfig(){
   cfg.strategy=$('cfgStrategy').value;
   cfg.lotSize=parseFloat($('cfgLot').value)||0.01;
+  cfg.riskPercent=parseFloat($('cfgRiskPercent').value)||0;
   cfg.posPerEntry=parseInt($('cfgPosCount').value)||1;
   cfg.maxPositions=parseInt($('cfgMaxPos').value)||0;
   // cfg.tf: no longer read from a settings field — set directly by the
@@ -1023,6 +1061,7 @@ async function fetchBinanceSymbols(){
   }catch(e){ log('Could not load the full Binance pair list — you can still type a symbol directly.'); }
 }
 document.addEventListener('DOMContentLoaded',()=>{
+  updateEnvPills(); // reflect the default env (demo) before any connection starts
   const box=document.getElementById('symSearchResults');
   const input=document.getElementById('symSearch');
   if(input){
@@ -1093,7 +1132,9 @@ function connectCTOpen(){
   // right before every fresh socket open forces a real re-subscribe, every
   // single reconnect, instead of trusting stale state from the dead one.
   Object.values(state.assets).forEach(x=>{x.subscribedSymbolId=null;});
-  state.clientId=$('ctId').value.trim();state.clientSecret=$('ctSec').value.trim();state.accessToken=$('ctTok').value.trim();state.env=$('ctEnv').value;
+  state.clientId=$('ctId').value.trim();state.clientSecret=$('ctSec').value.trim();state.accessToken=$('ctTok').value.trim();
+  // state.env is set by the Demo/Live pill in the dashboard (switchEnv()),
+  // defaulting to 'demo' — no longer read from a login-page field.
   if(!state.clientId||!state.clientSecret||!state.accessToken){state.connecting=false;setConnectBtnEnabled(true);alert('Client ID, Client Secret and Access Token are all required.');return;}
   saveCreds();showLoading('Connecting to cTrader...');
   const host=state.env==='live'?'wss://live.ctraderapi.com:5036':'wss://demo.ctraderapi.com:5036';
@@ -1176,10 +1217,29 @@ function handleCT(m){
     case PT.EXECUTION_EVENT:onExec(p);break;
     case PT.ORDER_ERROR_EVENT:
       log('ORDER ERROR: '+p.errorCode+(p.description?(' — '+p.description):''));
-      // No symbolId on this event to know which asset it belongs to, so
-      // release every asset's in-flight lock rather than leave a real
-      // rejection stuck blocking re-entry for up to 8s for no reason.
-      Object.values(state.assets).forEach(x=>{x.orderPending=false;});
+      // FIX ("only eating my account balance... opening and closes trade
+      // faster faster" — your log showed 30+ identical NOT_ENOUGH_MONEY
+      // errors back to back, same second): this used to unconditionally
+      // clear every asset's in-flight lock on ANY error, including one
+      // that will keep failing the exact same way until something
+      // actually changes (not enough margin). That turned into an
+      // unthrottled retry loop — fail, unlock, retry instantly, fail
+      // again — spamming the broker and burning through whatever margin
+      // was left. Now NOT_ENOUGH_MONEY specifically does NOT clear the
+      // lock (the normal cooldown is left standing), and after 3 in a
+      // row, Auto is turned off outright instead of continuing to hammer
+      // the same rejected order forever. Any other error keeps the old
+      // immediate-unlock behavior.
+      if(p.errorCode==='NOT_ENOUGH_MONEY'){
+        state.consecutiveFundsErrors=(state.consecutiveFundsErrors||0)+1;
+        if(state.consecutiveFundsErrors>=3&&state.auto){
+          state.auto=false;
+          log('🛑 3+ NOT_ENOUGH_MONEY errors in a row — turning Auto OFF instead of continuing to retry an order the account cannot afford right now.');
+        }
+      } else {
+        state.consecutiveFundsErrors=0;
+        Object.values(state.assets).forEach(x=>{x.orderPending=false;});
+      }
       break;
     case PT.ERROR_RES:{
       hideLoading();state.connecting=false;
@@ -1332,6 +1392,23 @@ function norm(s){return String(s).toUpperCase().replace(/[^A-Z]/g,'');}
 // the FULL response actually carries.
 function isFullLoaded(a){ return !!(a.full && a.full.minVolume!=null && a.full.lotSize!=null); }
 function lotSizeFor(a){ return isFullLoaded(a) ? a.full.lotSize : 100000; }
+// New — balance-based position sizing ("no calculating the account
+// balance to know how many positions it should enter with"): cfg.lotSize
+// used to be sent to every order exactly as typed, with zero connection to
+// the actual account balance. When cfg.riskPercent is 0 this still behaves
+// exactly like before (fixed lot). When it's set, this scales cfg.lotSize
+// by how much the balance has grown/shrunk since this session's first
+// known balance — same approach as our other bot's computeLots().
+function effectiveLotSize(){
+  if(!cfg.riskPercent||cfg.riskPercent<=0)return cfg.lotSize;
+  const bal=state.paper?state.paperBalance:state.balance;
+  if(bal==null||!Number.isFinite(bal)||bal<=0)return cfg.lotSize;
+  const key=state.paper?'lotScaleBasePaper':'lotScaleBaseReal';
+  if(state[key]==null)state[key]=bal;
+  const scale=bal/state[key];
+  const scaled=cfg.lotSize*scale*(cfg.riskPercent/100)*100; // riskPercent=100 means "scale 1:1 with balance ratio"
+  return Math.max(0.01,+scaled.toFixed(2));
+}
 function volumeFor(a, lots){
   const lotSize=lotSizeFor(a);
   const minVol=isFullLoaded(a) ? a.full.minVolume : lotSize/100;
@@ -2309,7 +2386,7 @@ function paperOpen(a,side){
     return false;
   }
   const entry=a.lastPrice;
-  const vol=volumeFor(a,cfg.lotSize);
+  const vol=volumeFor(a,effectiveLotSize());
   if(!Number.isFinite(vol)||vol<=0){
     log('Cannot trade '+a.label+': lot size not ready yet (volume calc came back '+vol+'). Try again in a moment.');
     return false;
@@ -2346,7 +2423,7 @@ function realOpen(a,side){
     // number serializes to JSON null, which the broker reports as a missing
     // field. Catch it here, locally, with a clear reason instead.
     if(!symId){log('Cannot trade '+a.label+' yet — still loading this symbol from the broker. Try again in a moment.');return false;}
-    const vol=volumeFor(a,cfg.lotSize);
+    const vol=volumeFor(a,effectiveLotSize());
     if(!Number.isFinite(vol)||vol<=0){log('Cannot trade '+a.label+': lot size not ready yet (volume calc came back '+vol+'). Try again in a moment.');return false;}
     // FIX: NEW_ORDER_REQ takes relativeStopLoss (relative distance, fixed
     // 1/100000-of-price-unit scale per cTrader's own API spec — confirmed by
@@ -2389,7 +2466,7 @@ function realOpen(a,side){
     send(PT.NEW_ORDER_REQ,orderPayload);
     return true;
   }else{
-    bnCall('/api/binance/order',{symbol:a.bnSymbol,side:side==='BUY'?'BUY':'SELL',type:'MARKET',quantity:cfg.lotSize.toString()});
+    bnCall('/api/binance/order',{symbol:a.bnSymbol,side:side==='BUY'?'BUY':'SELL',type:'MARKET',quantity:effectiveLotSize().toString()});
     return true;
   }
 }
@@ -2479,7 +2556,7 @@ function realClose(a,pos){
     send(PT.CLOSE_POSITION_REQ,{ctidTraderAccountId:state.accountId,positionId:pos.positionId,volume:pos.volume||0});
   }else{
     const side=pos.side==='BUY'?'SELL':'BUY';
-    bnCall('/api/binance/order',{symbol:a.bnSymbol,side,type:'MARKET',quantity:cfg.lotSize.toString()});
+    bnCall('/api/binance/order',{symbol:a.bnSymbol,side,type:'MARKET',quantity:effectiveLotSize().toString()});
   }
   log('Close sent: '+pos.side+' on '+a.label);
 }
@@ -2608,29 +2685,27 @@ function checkGridExit(a){
     a.gridProfitLockArmed=true;
     log('🔒 Profit protection armed at +$'+a.gridPeakFloating.toFixed(2)+' ('+level+' pos) on '+a.label+' — will lock in and reverse if it gives back $'+givebackAmt.toFixed(2)+' from whatever high it reaches.');
   }
-  if(cfg.gridProfitLock&&a.gridProfitLockArmed&&(a.gridPeakFloating-floating)>=givebackAmt){
-    log('Grid: profit-lock — banking '+fmtPnL(floating)+' on '+a.label+' before it slips further, flipping opposite next round (same size).');
-    const side=a.positions[0]?a.positions[0].side:null;
+  // FIX ("only eating my account balance... closing in the loss" — your
+  // log showed profit-lock firing dozens of times a minute, banking
+  // NEGATIVE amounts like -0.75, -0.72, flipping instantly every time):
+  // this was missing two things I'd already found and fixed in our other
+  // bot the hard way. (1) No floor — it could trigger even when floating
+  // had already gone negative, which is banking a LOSS, not protecting a
+  // profit; "profit-lock" that fires on a loss defeats its own purpose.
+  // (2) It auto-fired the opposite direction the INSTANT it closed, with
+  // zero confirmation that direction had anything real behind it — pure
+  // reflex. Combined, those two turned every bit of market noise into an
+  // instant flip that pays spread/commission both ways for nothing —
+  // exactly the "faster and faster, eating the balance" pattern. Now it
+  // (1) can only fire while still genuinely positive, and (2) no longer
+  // forces a direction at all — it goes back to waiting for a real, fresh
+  // 2-candle-confirmed signal, same as a normal round, and opens in
+  // WHATEVER direction that confirms, even if that's the same side again.
+  if(cfg.gridProfitLock&&a.gridProfitLockArmed&&floating>0&&(a.gridPeakFloating-floating)>=givebackAmt){
+    log('Grid: profit-lock — banking '+fmtPnL(floating)+' on '+a.label+' before it slips further, waiting for a fresh confirmed signal before the next round (no more blind reversals).');
     const keepLevel=level;
     closeAllPositions(a);
-    if(side){
-      const flipSide=side==='BUY'?'SELL':'BUY';
-      a.gridLevel=keepLevel;
-      a.forceNextSide=flipSide;
-      // FIX (the actual root cause of "opening both directions at once" —
-      // confirmed in your log: a flip meant to open 4 BUY legs instead
-      // opened 3 SELL + 1 BUY): maybeTrade's forceNextSide branch only
-      // fires the FIRST leg of the flip, then hands off to
-      // maybeTradeGrid() for every leg after that — but maybeTradeGrid
-      // builds legs using a.gridSide/a.gridTargetLevel, which this branch
-      // never updated. So it kept building the round with the OLD side
-      // and OLD target level while the first leg had already gone the
-      // NEW way — literally mixing both directions in one round, every
-      // single time profit-lock flipped. Now both are set here too, so
-      // every leg after the first matches the flip, not the stale round.
-      a.gridSide=flipSide;
-      a.gridTargetLevel=keepLevel;
-    }
+    a.gridLevel=keepLevel; // next real confirmation opens at this size, whichever direction it confirms
     return;
   }
   const maxDD=cfg.gridMaxDD||0;
@@ -2730,6 +2805,7 @@ function onExec(p){
       const a=Object.values(state.assets).find(x=>x.symbolId===pos.tradeData.symbolId);
       if(a&&pos.positionId&&pos.tradeData.volume>0){
         a.orderPending=false; // confirmed — release the in-flight lock from executeTrade()
+        state.consecutiveFundsErrors=0; // a real fill went through — margin issue (if any) has cleared
         const digits=digitsFor(a);
         const side=pos.tradeData.tradeSide===1?'BUY':'SELL';
         // FIX #4 (the "Filled BUY @ 0.05" bug / instant-close-at-fake-profit):
