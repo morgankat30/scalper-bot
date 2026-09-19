@@ -139,8 +139,9 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
 .badge.demo{color:var(--gold); border-color:var(--gold); background:rgba(255,215,0,.08);}
 .badge.off{color:var(--dim); border-color:var(--line);}
 
-/* Conn status */
-.conn-status{position:absolute; top:12px; right:16px; z-index:10;}
+/* Conn status — moved to the LEFT, away from the AI/Megan icon on the right */
+.conn-status{position:absolute; top:12px; left:16px; z-index:10;}
+#connBadge{cursor:pointer;}
 
 /* Screens: Symbols, Config */
 .screen-header{padding:calc(16px + env(safe-area-inset-top)) 16px 16px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; position:relative;}
@@ -315,12 +316,7 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
 <!-- MAIN DASHBOARD -->
 <div id="scrDash" class="screen">
   <div class="conn-status">
-    <span id="connBadge" class="badge off">OFFLINE</span>
-    <!-- Demo/Live moved here from the login page, matching our other bot —
-         tap to reconnect the SAME credentials under the other environment,
-         no need to log out or go back to a separate screen. -->
-    <span id="envPillDemo" onclick="switchEnv('demo')" style="cursor:pointer; margin-left:8px; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:700; border:1px solid var(--line);">DEMO</span>
-    <span id="envPillLive" onclick="switchEnv('live')" style="cursor:pointer; margin-left:4px; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:700; border:1px solid var(--line);">LIVE</span>
+    <span id="connBadge" class="badge off" onclick="toggleEnvFromBadge()">OFFLINE</span>
   </div>
   <div class="dash-scroll" id="dashScroll">
     <!-- FIX (live 3D Megan replaces the old static header robot): removed
@@ -448,11 +444,11 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
       <label>Starting TP per position ($)</label>
       <input id="cfgGridTP" type="number" step="0.01" min="0.01" value="0.5">
       <div class="tog">
-        <div><b>Grid Profit-Lock</b><small>Once armed, bank a pulled-back peak instead of risking it slip further, then flip</small></div>
+        <div><b>Profit-Lock</b><small>Works on every strategy now, not just Grid. Once floating profit reaches the arm amount, it locks in the peak instead of risking it slip back down.</small></div>
         <div class="switch on" id="swGridProfitLock" onclick="this.classList.toggle('on')"></div>
       </div>
       <div class="row2">
-        <div><label>Arm at ($)</label><input id="cfgGridProfitLockArm" type="number" step="0.01" min="0.01" value="0.38"></div>
+        <div><label>Arm at ($)</label><input id="cfgGridProfitLockArm" type="number" step="0.01" min="0.01" value="0.25"></div>
         <div><label>Giveback from peak ($)</label><input id="cfgGridProfitLockGiveback" type="number" step="0.01" min="0.01" value="0.08"></div>
       </div>
 
@@ -531,6 +527,20 @@ h1,h2,h3,.brand{font-family:'Orbitron',sans-serif;}
 <div id="newsModal" class="news-modal">
   <div class="screen-header"><div class="back" onclick="hideNewsModal()">&#8249;</div><h2>News Calendar</h2></div>
   <div class="news-list" id="newsList"></div>
+</div>
+
+<!-- Env-switch confirm — replaces a native confirm() dialog, which can be
+     silently blocked or auto-dismissed inside an installed PWA/webview on
+     Android with zero visible error. This is why switching to LIVE looked
+     like "the button does nothing." -->
+<div id="envConfirmModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:200; align-items:center; justify-content:center;">
+  <div style="background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px; max-width:300px; text-align:center;">
+    <p id="envConfirmText" style="color:var(--txt); font-size:14px; margin-bottom:16px;"></p>
+    <div style="display:flex; gap:10px;">
+      <div onclick="hideEnvConfirm()" style="flex:1; padding:10px; border:1px solid var(--line); border-radius:10px; cursor:pointer; color:var(--dim);">Cancel</div>
+      <div id="envConfirmYes" style="flex:1; padding:10px; border-radius:10px; cursor:pointer; font-weight:700;">Switch</div>
+    </div>
+  </div>
 </div>
 
 <!-- LOADING OVERLAY -->
@@ -628,7 +638,7 @@ let cfg={
   // Grid / Ladder Scalping — batch/pyramid entry mode + risk controls.
   gridEntryMode:'momentum',gridMaxLevels:6,gridMaxDD:15,
   gridRsiOS:30,gridRsiOB:70,
-  gridProfitLock:true,gridProfitLockArm:0.38,gridProfitLockGiveback:0.08,gridTP:0.5
+  gridProfitLock:true,gridProfitLockArm:0.25,gridProfitLockGiveback:0.08,gridTP:0.5
 };
 // Presets just auto-fill the same fields every strategy already uses — you can
 // still edit any of them by hand afterward. EMA Ride/Pullback additionally
@@ -740,24 +750,31 @@ function fmt$(n){return '$'+(n||0).toFixed(2);}
 function fmtPnL(n){return (n>=0?'+':'')+n.toFixed(2);}
 function todayKey(){return new Date().toISOString().slice(0,10);}
 function resetDaily(){const k=todayKey();if(state.todayKey!==k){state.todayKey=k;state.todayPnl=0;state.wins=0;state.losses=0;}}
-function setConnBadge(txt,cls){const b=$('connBadge');if(b){b.textContent=txt;b.className='badge '+cls;}updateEnvPills();}
-// New — Demo/Live moved into the dashboard, matching our other bot. Tap
-// the other pill to fully reconnect (same credentials) under the new
-// environment — reuses connectCT()'s own clean teardown-then-reopen,
-// exactly the "connect the same way ours does, not getting stuck" ask.
-function updateEnvPills(){
-  const d=$('envPillDemo'),l=$('envPillLive');if(!d||!l)return;
-  d.style.background=state.env==='demo'?'var(--green)':'transparent';
-  d.style.color=state.env==='demo'?'#000':'var(--dim)';
-  l.style.background=state.env==='live'?'var(--red)':'transparent';
-  l.style.color=state.env==='live'?'#fff':'var(--dim)';
+function setConnBadge(txt,cls){const b=$('connBadge');if(b){b.textContent=txt;b.className='badge '+cls;}}
+// New — Demo/Live is now the connection badge itself (tappable), not a
+// separate pair of pills — that was redundant with what the badge already
+// showed and was causing the "two DEMO labels, one doesn't do anything"
+// confusion. Tapping toggles to the other environment and fully
+// reconnects with the same credentials, same as our other bot.
+function toggleEnvFromBadge(){
+  if(!state.wasEverConnected&&!state.connected&&!state.connecting)return; // nothing to switch before a first connect
+  showEnvConfirm(state.env==='live'?'demo':'live');
 }
-function switchEnv(newEnv){
+function showEnvConfirm(newEnv){
+  const modal=$('envConfirmModal');if(!modal)return;
+  $('envConfirmText').textContent=newEnv==='live'
+    ? 'Switch to LIVE — real money? This reconnects with the same login under the live account.'
+    : 'Switch back to DEMO? This reconnects with the same login under the demo account.';
+  const yesBtn=$('envConfirmYes');
+  yesBtn.style.background=newEnv==='live'?'var(--red)':'var(--green)';
+  yesBtn.style.color=newEnv==='live'?'#fff':'#000';
+  yesBtn.onclick=()=>{hideEnvConfirm();applyEnvSwitch(newEnv);};
+  modal.style.display='flex';
+}
+function hideEnvConfirm(){const m=$('envConfirmModal');if(m)m.style.display='none';}
+function applyEnvSwitch(newEnv){
   if(newEnv===state.env)return;
-  if(newEnv==='live'&&!confirm('Switch to LIVE — real money? This reconnects with the same login under the live account.'))return;
-  if(newEnv==='demo'&&state.env==='live'&&!confirm('Switch back to DEMO? This reconnects with the same login under the demo account.'))return;
   state.env=newEnv;
-  updateEnvPills();
   if(state.connected||state.connecting||state.ws){connectCT();} // reuses the exact same reconnect path as a dropped connection
 }
 function showLoading(t){$('loadingText').textContent=t||'Loading...';$('loadingOverlay').classList.add('active');
@@ -785,7 +802,7 @@ function saveCreds(){
   localStorage.setItem('tpea_sym',state.currentSymbol);
 }
 function loadCreds(){
-  const a=localStorage.getItem('tpea_ct_id');if(a){$('ctId').value=a;$('ctSec').value=localStorage.getItem('tpea_ct_sec')||'';$('ctTok').value=localStorage.getItem('tpea_ct_tok')||'';$('ctRef').value=localStorage.getItem('tpea_ct_ref')||'';state.env=localStorage.getItem('tpea_ct_env')||'demo';updateEnvPills();$('swRemCT').classList.add('on');}
+  const a=localStorage.getItem('tpea_ct_id');if(a){$('ctId').value=a;$('ctSec').value=localStorage.getItem('tpea_ct_sec')||'';$('ctTok').value=localStorage.getItem('tpea_ct_tok')||'';$('ctRef').value=localStorage.getItem('tpea_ct_ref')||'';state.env=localStorage.getItem('tpea_ct_env')||'demo';$('swRemCT').classList.add('on');}
   const k=localStorage.getItem('tpea_bn_key');if(k){$('bnKey').value=k;$('bnSec').value=localStorage.getItem('tpea_bn_sec')||'';$('bnEnv').value=localStorage.getItem('tpea_bn_env')||'testnet';$('bnRelay').value=localStorage.getItem('tpea_bn_rel')||'http://localhost:8788';$('swRemBN').classList.add('on');}
   const c=localStorage.getItem('tpea_cfg');if(c){cfg=JSON.parse(c);}
   const s=localStorage.getItem('tpea_sym');if(s)state.currentSymbol=s;
@@ -917,7 +934,7 @@ function saveConfig(){
   cfg.gridRsiOS=parseFloat($('cfgGridRsiOS').value)||30;
   cfg.gridRsiOB=parseFloat($('cfgGridRsiOB').value)||70;
   cfg.gridProfitLock=$('swGridProfitLock').classList.contains('on');
-  cfg.gridProfitLockArm=parseFloat($('cfgGridProfitLockArm').value)||0.38;
+  cfg.gridProfitLockArm=parseFloat($('cfgGridProfitLockArm').value)||0.25;
   cfg.gridProfitLockGiveback=parseFloat($('cfgGridProfitLockGiveback').value)||0.08;
   cfg.autoReverse=$('swReverse').classList.contains('on');
   cfg.profitProtect=$('swProtect').classList.contains('on');
@@ -1061,7 +1078,6 @@ async function fetchBinanceSymbols(){
   }catch(e){ log('Could not load the full Binance pair list — you can still type a symbol directly.'); }
 }
 document.addEventListener('DOMContentLoaded',()=>{
-  updateEnvPills(); // reflect the default env (demo) before any connection starts
   const box=document.getElementById('symSearchResults');
   const input=document.getElementById('symSearch');
   if(input){
@@ -1236,6 +1252,18 @@ function handleCT(m){
           state.auto=false;
           log('🛑 3+ NOT_ENOUGH_MONEY errors in a row — turning Auto OFF instead of continuing to retry an order the account cannot afford right now.');
         }
+        // New — no symbolId on this event either, so this applies to the
+        // asset currently being viewed (same limitation as the lock-clear
+        // below always had). If NO legs of this round have filled yet
+        // (0 open positions), the round's very size is what's
+        // unaffordable — cap it back to 1 so the NEXT fresh round tries a
+        // size that might actually fit the account, instead of retrying
+        // (and failing) at the same oversized level every time.
+        const cur=state.assets[state.currentSymbol];
+        if(cur&&!cur.positions.length&&cur.gridLevel>1){
+          log('Grid level capped back to 1 on '+cur.label+' — level '+cur.gridLevel+' was not affordable on this balance.');
+          cur.gridLevel=1;
+        }
       } else {
         state.consecutiveFundsErrors=0;
         Object.values(state.assets).forEach(x=>{x.orderPending=false;});
@@ -1281,7 +1309,7 @@ function applyBNAccount(acct){if(!acct||acct.error)return;if(acct.balances){cons
 // ========== ASSET INIT ==========
 function initAsset(){
   const sym=state.currentSymbol;const def=SYM_DEFS[sym];if(!def)return;
-  if(!state.assets[sym])state.assets[sym]={key:sym,label:def.label,name:def.name,symbolId:null,full:null,lastPrice:0,bid:null,ask:null,bars1:[],bars5:[],bars15:[],bars30:[],bars60:[],currentBar:null,dataReady:false,positions:[],signal:'WAIT',score:0,streak:0,lastDir:'WAIT',lastTradeAt:0,lastCloseAt:0,floatingPnL:0,emaFast:null,emaSlow:null,emaTrend:null,rsi:null,atr:null,momentum:0,orderPending:false,orderPendingAt:0,forceNextSide:null,tradingEnabled:true};
+  if(!state.assets[sym])state.assets[sym]={key:sym,label:def.label,name:def.name,symbolId:null,full:null,lastPrice:0,bid:null,ask:null,bars1:[],bars5:[],bars15:[],bars30:[],bars60:[],currentBar:null,dataReady:false,positions:[],signal:'WAIT',score:0,streak:0,lastDir:'WAIT',lastTradeAt:0,lastCloseAt:0,floatingPnL:0,emaFast:null,emaSlow:null,emaTrend:null,rsi:null,atr:null,momentum:0,orderPending:false,orderPendingAt:0,forceNextSide:null,tradingEnabled:true,lastEntryBarT:null};
   const a=state.assets[sym];a.bnSymbol=def.bn;
   a.tradingEnabled=true; // FIX #14 (continued) — re-selecting a previously deactivated symbol reactivates it
   setText('sigPair',def.label+' - '+def.name);
@@ -2239,7 +2267,11 @@ function maybeTrade(a){
   // already prevents that). Once the open position actually closes on its
   // own real TP/SL/max-hold, the next tick is free to open fresh in
   // whatever direction the signal is showing by then.
-  if(!hasPos&&!isMomentumFadingAgainst(a,a.signal))executeTrade(a,a.signal);
+  if(!hasPos&&!isMomentumFadingAgainst(a,a.signal)){
+    a.gridPeakFloating=0; // fresh basket — profit-lock tracks from zero again
+    a.gridProfitLockArmed=false;
+    executeTrade(a,a.signal);
+  }
 }
 // Was a Scalping-only momentum-fade guard; Scalping (the original preset)
 // has been removed, so this is now a permanent no-op kept for maybeTrade's
@@ -2270,6 +2302,16 @@ function maybeTradeGrid(a){
     return;
   }
   if(!a.dataReady||a.signal==='WAIT'||a.streak<1)return;
+  // FIX ("always entering in the middle of the candle"): maybeTrade runs
+  // on every single price tick, with nothing gating fresh entries to an
+  // actual candle boundary — so a signal could fire the instant it became
+  // true, wherever that happened to land inside the currently-forming
+  // candle. Now a fresh round can only open once per NEW candle on the
+  // chosen chart timeframe (cfg.tf) — the tick right after the previous
+  // one closes — same as our other bot's 2-candle-confirmation gate.
+  const hiBar=cfg.tf===1?a.currentBar:a['hi'+cfg.tf];
+  const curBarT=hiBar?hiBar.t:null;
+  if(curBarT==null||curBarT===a.lastEntryBarT)return;
   const now=Date.now();
   if(a.lastCloseAt&&now-a.lastCloseAt<cfg.cooldownSec*1000)return;
   if(a.lastTradeAt&&now-a.lastTradeAt<cfg.cooldownSec*1000)return;
@@ -2278,6 +2320,7 @@ function maybeTradeGrid(a){
   a.gridProfitLockArmed=false;
   a.gridSide=a.signal;
   a.gridTargetLevel=level;
+  a.lastEntryBarT=curBarT;
   log('Grid: opening level '+level+' round, '+a.signal+' on '+a.label+' — batch target +$'+(level*(cfg.gridTP||0.5)).toFixed(2)+'.');
   executeTrade(a,a.signal);
 }
@@ -2595,6 +2638,29 @@ function checkExits(a){
   // basket-profit/EMA-flip/max-hold logic below (ported from Pepperstone's
   // checkGridBatchExit).
   if(cfg.strategy==='grid'){checkGridExit(a);return;}
+  // New — profit-lock now runs for every strategy, not just Grid ("i want
+  // the profit protection to work on every strategy in this bot"). Before
+  // this, real trades on any non-grid strategy had NO profit protection at
+  // all beyond the fixed broker take-profit — the old profit-lock further
+  // up in this file was paper-only (if(!p.paper)return;). Same peak-arm-
+  // giveback logic as Grid's own, just closing everything on this asset
+  // instead of flipping direction (these strategies pick their own next
+  // entry from their own signal, not a forced flip).
+  if(cfg.gridProfitLock&&a.positions.length){
+    const floating=a.floatingPnL;
+    const armLevel=cfg.gridProfitLockArm||0.25;
+    const givebackAmt=cfg.gridProfitLockGiveback||0.08;
+    if(a.gridPeakFloating==null||floating>a.gridPeakFloating)a.gridPeakFloating=floating;
+    if(!a.gridProfitLockArmed&&a.gridPeakFloating>=armLevel){
+      a.gridProfitLockArmed=true;
+      log('🔒 Profit protection armed at +$'+a.gridPeakFloating.toFixed(2)+' on '+a.label+' — will lock in and close if it gives back $'+givebackAmt.toFixed(2)+' from whatever high it reaches.');
+    }
+    if(a.gridProfitLockArmed&&floating>0&&(a.gridPeakFloating-floating)>=givebackAmt){
+      log('Profit-lock — banking '+fmtPnL(floating)+' on '+a.label+' before it slips further.');
+      closeAllPositions(a);
+      return;
+    }
+  }
   // FIX ("bot can take tp at 1.48 but broker shows only 0.08 — remove that
   // system completely"): this used to run for REAL trades too, racing
   // against the real broker-side take-profit that realOpen() already sends
