@@ -1644,6 +1644,20 @@ function initChart(){
 function redrawChart(resetZoom){
   if(!candleSeries)return;
   const a=state.assets[state.currentSymbol];if(!a)return;
+  // FIX ("chart still showing gold candles while on BTC/USDT"): this used
+  // to return early with the chart untouched whenever the new symbol's
+  // bars for the currently-selected timeframe weren't built yet at this
+  // exact moment (a real timing gap right after switching symbols) —
+  // leaving whatever the PREVIOUS symbol last drew frozen on screen
+  // indefinitely, since nothing else forces a full redraw afterward
+  // (per-tick updates only append, they can't clear stale data). Now any
+  // symbol change clears the chart immediately, before anything else, so
+  // there's never a wrong-symbol candle left showing even if the new
+  // bars aren't ready yet — it shows genuinely empty rather than stale.
+  if(state.lastRenderedSymbol!==state.currentSymbol){
+    candleSeries.setData([]);emaLine1.setData([]);emaLine2.setData([]);emaLine3.setData([]);
+    state.lastRenderedSymbol=state.currentSymbol;
+  }
   const bars=tfBars(a,cfg.tf);
   if(!bars.length)return;
   const data=bars.map(b=>({time:b.t/1000,open:b.o,high:b.h,low:b.l,close:b.c}));
@@ -2480,7 +2494,15 @@ function realOpen(a,side){
     // rather than trusting the broker's raw fields blindly.
     const problem=sanityCheckTrade(a,vol,slDist);
     if(problem){log('Blocked '+a.label+' REAL order: '+problem+'.');return false;}
-    const relSL=Math.round(slDist*100000);
+    // FIX ("Relative stop loss has invalid precision" on BTC/USDT): slDist
+    // was multiplied straight into the broker's fixed-point scale without
+    // ever being rounded to THIS symbol's own decimal precision first.
+    // That happened to work for XAUUSD (digits=2) by coincidence but broke
+    // on BTC/USDT, whose price precision doesn't line up the same way —
+    // the broker rejected the resulting value as landing on an invalid
+    // increment. Rounding to digitsFor(a) before scaling fixes it for any
+    // symbol, not just the one it happened to work on before.
+    const relSL=Math.round(roundToDigits(slDist,digits)*100000);
     // FIX #13 ("TP should always land at or above what I set, not $0.37,
     // $0.17..."): Basket Profit was only ever enforced by this client
     // polling floatingPnL on each price tick and THEN sending a separate
@@ -2503,7 +2525,7 @@ function realOpen(a,side){
     // together as a round, breaking the batch semantics. Every other
     // strategy is unchanged.
     const tpDist=(cfg.strategy!=='grid'&&cfg.basketProfit>0)?cfg.basketProfit/dollarPerUnitFor(vol,a):0;
-    const relTP=tpDist>0?Math.round(tpDist*100000):0;
+    const relTP=tpDist>0?Math.round(roundToDigits(tpDist,digits)*100000):0;
     const orderPayload={ctidTraderAccountId:state.accountId,symbolId:symId,orderType:1,tradeSide:side==='BUY'?1:2,volume:vol,relativeStopLoss:relSL,label:'SXU'};
     if(relTP>0)orderPayload.relativeTakeProfit=relTP;
     send(PT.NEW_ORDER_REQ,orderPayload);
@@ -2990,6 +3012,26 @@ function applyReconcileFor(a){
       local.stopLoss=pos.stopLoss||local.stopLoss; // same FIX #4 — ProtoOAPosition.stopLoss/takeProfit are plain doubles too
       local.takeProfit=pos.takeProfit||local.takeProfit;
       local.volume=pos.tradeData.volume;
+      // FIX ("Current SL: —" confirmed for real on a live ETHUSD position —
+      // the broker had accepted the order but silently dropped the stop-
+      // loss instead of rejecting it, so the client-side send looked
+      // successful with nothing to warn about): this is the actual
+      // broker-confirmed truth (ProtoOAPosition.stopLoss), not just what we
+      // asked for — if it comes back genuinely empty on a REAL position we
+      // meant to protect (local.initialRisk was set, i.e. this wasn't
+      // deliberately sent with no stop), re-send the stop-loss as an
+      // explicit amend rather than leaving it silently unprotected. Only
+      // tries once per position (local.slReapplied) so a broker that
+      // genuinely rejects every attempt doesn't spam retries forever.
+      if(!pos.stopLoss&&local.initialRisk>0&&!local.slReapplied){
+        local.slReapplied=true;
+        const digits=digitsFor(a);
+        const relSL=Math.round(roundToDigits(local.initialRisk,digits)*100000);
+        if(relSL>0){
+          log('⚠️ Broker confirms NO stop-loss is actually on '+(a.label||'')+' position '+local.positionId+' — re-applying it now.');
+          send(PT.AMEND_POSITION_SLTP_REQ,{ctidTraderAccountId:state.accountId,positionId:local.positionId,relativeStopLoss:relSL});
+        }
+      }
       kept.push(local);
       delete byId[local.positionId];
     }
